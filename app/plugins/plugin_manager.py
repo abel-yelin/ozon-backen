@@ -1,6 +1,6 @@
 """Plugin manager - handles plugin registration and discovery"""
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from app.plugins.base import BasePlugin
 
 
@@ -14,7 +14,7 @@ class PluginManager:
         """Register a plugin"""
         self._plugins[plugin.name] = plugin
 
-    def get(self, name: str) -> BasePlugin | None:
+    def get(self, name: str) -> Optional[BasePlugin]:
         """Get plugin by name"""
         return self._plugins.get(name)
 

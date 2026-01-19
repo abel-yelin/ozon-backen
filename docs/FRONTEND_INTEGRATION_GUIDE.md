@@ -8,32 +8,102 @@
 
 ## 📋 架构概述
 
-### 设计理念
-- **后端（Python FastAPI）**: 无状态服务，只处理重活（API调用、图片下载、文件上传）
-- **前端（Next.js）**: 全栈应用，管理所有数据（用户、凭证、任务记录）和业务逻辑
+### 核心设计理念
+
+这是一个**前后端分离的微服务架构**，职责明确划分：
+
+#### 前端（Next.js + Drizzle/Prisma）
+**职责**: 全栈应用，管理所有业务数据和逻辑
+- ✅ 用户认证与授权（ShipAny Auth）
+- ✅ Ozon API 凭证管理（加密存储）
+- ✅ 下载任务记录与状态跟踪
+- ✅ 业务逻辑与配额管理
+- ✅ 用户界面与交互体验
+
+#### 后端（Python FastAPI）
+**职责**: 无状态服务，专注"重活"处理
+- ✅ Ozon API 集成调用
+- ✅ 并发图片下载
+- ✅ 流式上传到 Cloudflare R2
+- ✅ 计算密集型操作
 
 ### 系统架构图
+
 ```
-┌──────────────────────────────────────────────────────┐
-│              Next.js 前端 (数据层)                     │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-│  │ 用户认证  │  │ 凭证管理  │  │ 任务记录 & 结果   │   │
-│  │ (Supabase)│  │ (加密存储) │  │ (数据库存储)      │   │
-│  └──────────┘  └──────────┘  └──────────────────┘   │
-└─────────────────────┬────────────────────────────────┘
-                      │ HTTP API (X-API-Key)
-                      ▼
-┌──────────────────────────────────────────────────────┐
-│         Python 后端 (计算层 - 无状态)                  │
-│  POST /api/v1/ozon/download                          │
-│   • 调用 Ozon API 查找产品                            │
-│   • 并发下载图片                                       │
-│   • 流式上传到 R2                                      │
-│   • 返回结果（不存储）                                 │
-└─────────────────────┬────────────────────────────────┘
-                      │
-                      ▼
-              Cloudflare R2 存储
+┌─────────────────────────────────────────────────────────────────┐
+│                    Next.js 前端 (数据层)                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │ ShipAny Auth │  │ Drizzle ORM  │  │ 任务记录 & 业务逻辑   │  │
+│  │ (用户认证)    │  │ (数据库管理)  │  │ (PostgreSQL)         │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+│                                                                   │
+│  数据存储:                                                         │
+│  • users (用户表)                                                 │
+│  • ozon_credentials (Ozon 凭证 - 加密)                            │
+│  • ozon_tasks (下载任务记录)                                      │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ HTTP API
+                              │ X-API-Key: shared_secret
+                              │ 凭证: client_id + api_key
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Python 后端 (计算层 - 完全无状态)                     │
+│                                                                  │
+│  POST /api/v1/ozon/download                                      │
+│   ┌────────────────────────────────────────────────────────┐    │
+│   │ 1. 接收前端传递的凭证和货号列表                           │    │
+│   │ 2. 调用 Ozon Seller API 查找产品                        │    │
+│   │ 3. 获取所有产品图片 URL                                  │    │
+│   │ 4. 并发下载图片到内存 (max_workers: 5)                  │    │
+│   │ 5. 流式上传到 Cloudflare R2 (不写磁盘)                  │    │
+│   │ 6. 返回完整结果 + R2 公共访问 URL                        │    │
+│   │                                                            │    │
+│   ❌ 不存储任何业务数据                                         │    │
+│   ❌ 不维护用户会话                                             │    │
+│   ❌ 不访问数据库                                               │    │
+│   └────────────────────────────────────────────────────────┘    │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              ▼
+                    ┌──────────────────┐
+                    │ Cloudflare R2    │
+                    │   对象存储        │
+                    │  (图片文件)       │
+                    └──────────────────┘
+```
+
+### 数据流图
+
+```
+1️⃣ 用户配置 Ozon 凭证
+   前端: 用户输入 client_id + api_key
+   前端: AES 加密凭证
+   前端数据库: 存储到 ozon_credentials 表
+
+2️⃣ 用户创建下载任务
+   前端: 选择凭证 + 输入货号列表
+   前端: 从数据库读取加密凭证
+   前端: 解密凭证
+
+3️⃣ 调用后端 API
+   前端 → POST /api/v1/ozon/download
+   {
+     "credential": { "client_id": "xxx", "api_key": "xxx" },
+     "articles": ["123456", "789012"],
+     "field": "offer_id",
+     "user_id": "user_abc123"
+   }
+
+4️⃣ 后端处理（重活）
+   后端: Ozon API 查询 → 获取图片列表
+   后端: 并发下载 → 内存缓冲
+   后端: 流式上传 R2 → 不写磁盘
+   后端: 返回结果
+
+5️⃣ 前端保存结果
+   后端 ← 返回: { success, data, error }
+   前端: 保存任务记录到 ozon_tasks 表
+   前端: 显示下载结果和 R2 URL
 ```
 
 ---
@@ -43,573 +113,435 @@
 1. [技术栈](#1-技术栈)
 2. [环境配置](#2-环境配置)
 3. [数据库设计](#3-数据库设计)
-4. [用户认证](#4-用户认证)
-5. [API 客户端](#5-api-客户端)
-6. [凭证管理](#6-凭证管理)
-7. [下载功能](#7-下载功能)
-8. [状态管理](#8-状态管理)
-9. [页面实现](#9-页面实现)
-10. [集成步骤](#10-集成步骤)
+4. [后端 API 说明](#4-后端-api-说明)
+5. [前端集成步骤](#5-前端集成步骤)
+6. [核心代码实现](#6-核心代码实现)
+7. [安全最佳实践](#7-安全最佳实践)
+8. [常见问题](#8-常见问题)
 
 ---
 
 ## 1. 技术栈
 
 ### 前端技术栈
-| 组件 | 技术 | 说明 |
-|------|------|------|
-| 框架 | Next.js 14+ (App Router) | React 全栈框架 |
-| 语言 | TypeScript | 类型安全 |
-| 数据库 | Supabase (PostgreSQL) | 用户数据、凭证、任务记录 |
-| 认证 | Supabase Auth | 基于JWT的用户认证 |
-| ORM | Prisma / Drizzle | 类型安全的数据库客户端 |
-| 样式 | Tailwind CSS | 实用优先的CSS框架 |
-| 组件 | shadcn/ui | 高质量React组件库 |
-| 状态 | Zustand | 轻量级状态管理 |
-| 表单 | React Hook Form + Zod | 表单验证 |
-| 加密 | crypto-js | 凭证加密存储 |
+
+| 组件 | 技术 | 版本要求 | 说明 |
+|------|------|---------|------|
+| 框架 | Next.js | 14+ | App Router |
+| 语言 | TypeScript | 5+ | 类型安全 |
+| 数据库 | PostgreSQL | 14+ | 生产环境 |
+| ORM | Drizzle ORM | 最新 | 类型安全的数据库客户端 |
+| 认证 | ShipAny Auth | - | 基于 NextAuth |
+| 样式 | Tailwind CSS | 3+ | 实用优先的 CSS 框架 |
+| 组件库 | shadcn/ui | 最新 | 高质量 React 组件 |
+| 状态管理 | Zustand | 5+ | 轻量级状态管理 |
+| 表单验证 | React Hook Form + Zod | 最新 | 表单处理 |
+| 加密 | crypto-js | 4+ | 凭证加密存储 |
 
 ### 后端技术栈
+
 | 组件 | 技术 | 说明 |
 |------|------|------|
-| 框架 | FastAPI | 高性能异步Python框架 |
-| 存储 | Cloudflare R2 | 对象存储（图片） |
-| 认证 | API Key (X-API-Key) | 服务间认证 |
+| 框架 | FastAPI | 0.100+ |
+| 异步运行时 | asyncio + aiohttp | 并发处理 |
+| 对象存储 | Cloudflare R2 | 图片存储 |
+| 认证 | X-API-Key Header | 服务间认证 |
+| 部署 | Docker | 容器化部署 |
 
 ---
 
 ## 2. 环境配置
 
-### 2.1 环境变量
+### 2.1 前端环境变量
 
-创建 `.env.local` 文件：
+在项目根目录创建 `.env` 文件：
 
 ```env
-# Supabase 配置
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-
-# Python 后端 API（无状态服务）
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_API_KEY=your-shared-secret
-
-# 凭证加密密钥（32字符）
-NEXT_PUBLIC_ENCRYPTION_KEY=your-32-char-encryption-key-here
-
-# 应用配置
+# ========================================
+# 应用基础配置
+# ========================================
 NEXT_PUBLIC_APP_URL=http://localhost:3000
+NEXT_PUBLIC_APP_NAME=Ozon Image Downloader
+
+# ========================================
+# 数据库配置 (前端管理)
+# ========================================
+DATABASE_PROVIDER=postgresql
+DATABASE_URL=postgresql://user:password@localhost:5432/ozon_app
+DB_SCHEMA=public
+DB_MIGRATIONS_TABLE=__drizzle_migrations
+DB_SINGLETON_ENABLED=true
+DB_MAX_CONNECTIONS=10
+
+# ========================================
+# 认证配置
+# ========================================
+AUTH_SECRET=your-auth-secret-here-generate-with-openssl-rand-base64-32
+AUTH_URL=http://localhost:3000
+
+# ========================================
+# Python 后端 API 配置
+# ========================================
+# 后端服务地址
+PYTHON_API_URL=http://localhost:8000
+# API 密钥 (与后端 .env 中的 PYTHON_SERVICE_API_KEY 一致)
+PYTHON_API_KEY=your-shared-secret-key-change-in-production
+
+# ========================================
+# 凭证加密配置
+# ========================================
+# 32 字符加密密钥 (用于加密存储 Ozon 凭证)
+CREDENTIAL_ENCRYPTION_KEY=your-32-char-encryption-key-here
+
+# ========================================
+# 可选: Cloudflare R2 配置 (如需直传)
+# ========================================
+# R2_ACCOUNT_ID=your_account_id
+# R2_ACCESS_KEY_ID=your_access_key
+# R2_SECRET_ACCESS_KEY=your_secret_key
+# R2_BUCKET_NAME=ozon-images
+# R2_PUBLIC_URL=https://your-r2-domain.com
 ```
 
-### 2.2 安装依赖
+### 2.2 后端环境变量
+
+在 `dev/ozon-backen/.env` 配置：
+
+```env
+# ========================================
+# Cloudflare R2 配置
+# ========================================
+R2_ACCOUNT_ID=your_r2_account_id
+R2_ACCESS_KEY_ID=your_r2_access_key
+R2_SECRET_ACCESS_KEY=your_r2_secret_key
+R2_BUCKET_NAME=ozon-images-uploads
+R2_PUBLIC_URL=https://your-r2-domain.com
+
+# ========================================
+# API 认证 (与前端共享)
+# ========================================
+PYTHON_SERVICE_API_KEY=your-shared-secret-key-change-in-production
+
+# ========================================
+# 插件配置 (可选)
+# ========================================
+OZON_MAX_WORKERS=5
+OZON_TIMEOUT_SEC=20
+OZON_DEFAULT_FIELD=offer_id
+```
+
+**⚠️ 重要**: `PYTHON_SERVICE_API_KEY` 必须在前端和后端保持一致！
+
+### 2.3 安装依赖
 
 ```bash
-# 创建 Next.js 项目
-npx create-next-app@latest frontend --typescript --tailwind --app
+# 前端依赖
+cd /path/to/ozon-front
+npm install
 
-cd frontend
-
-# 安装核心依赖
-npm install @supabase/supabase-js @supabase/auth-helpers-nextjs
-npm install zustand react-hook-form @hookform/resolvers zod
+# 如果使用 crypto-js 加密
 npm install crypto-js
-
-# 安装 Prisma（如果使用 Prisma）
-npm install prisma @prisma/client
-
-# 安装 shadcn/ui 组件
-npx shadcn-ui@latest init
-npx shadcn-ui@latest add button card input label textarea
-npx shadcn-ui@latest add table dialog form select
-npx shadcn-ui@latest add alert badge progress toast
-
-# 安装开发依赖
 npm install -D @types/crypto-js
+
+# shadcn/ui 组件 (如果需要)
+npx shadcn-ui@latest add button card input label textarea
+npx shadcn-ui@latest add table dialog form select alert
 ```
 
 ---
 
 ## 3. 数据库设计
 
-> **注意**: 所有业务数据存储在前端数据库，后端完全不存储任何业务数据。
+> **重要原则**: 后端完全不接触数据库，所有业务数据由前端数据库管理。
 
-### 3.1 Prisma Schema
+### 3.1 Drizzle Schema 定义
 
-```prisma
-// prisma/schema.prisma
+在 `src/config/db/schema.postgres.ts` 中添加：
 
-generator client {
-  provider = "prisma-client-js"
-}
+```typescript
+import { boolean, index, integer, pgTable, text, timestamp, json } from 'drizzle-orm/pg-core';
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+// ========================================
+// Ozon 凭证表 (加密存储)
+// ========================================
+export const ozonCredential = pgTable('ozon_credential',
+  {
+    id: text('id').primaryKey(), // 使用 cuid() 生成
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
 
-// 用户表（Supabase auth.users 的镜像）
-model User {
-  id            String    @id @default(cuid())
-  supabaseId    String    @unique
-  email         String    @unique
-  name          String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+    // 用户自定义的凭证名称 (如 "主店铺", "备用账号")
+    name: text('name').notNull(),
 
-  // 关联
-  ozonCredentials OzonCredential[]
-  ozonTasks       OzonTask[]
-}
+    // AES 加密后的凭证数据: {"client_id": "xxx", "api_key": "xxx"}
+    encryptedData: text('encrypted_data').notNull(),
 
-// Ozon 凭证表（加密存储）
-model OzonCredential {
-  id          String   @id @default(cuid())
-  userId      String
-  name        String   // 用户自定义名称，如 "我的主店铺"
-  encryptedData String // AES 加密的 {client_id, api_key}
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index('idx_ozon_credential_user').on(table.userId),
+  ]
+);
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  // 关联
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tasks       OzonTask[]
-
-  @@index([userId])
-}
-
+// ========================================
 // Ozon 下载任务表
-model OzonTask {
-  id          String   @id @default(cuid())
-  userId      String
-  credentialId String
+// ========================================
+export const ozonTask = pgTable('ozon_task',
+  {
+    id: text('id').primaryKey(), // cuid()
 
-  // 请求参数
-  articles    Json     // 货号列表
-  field       String   @default("offer_id") // offer_id | sku | vendor_code
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
 
-  // 状态
-  status      String   // pending | processing | completed | failed
-  progress    Float    @default(0) // 0-100
+    credentialId: text('credential_id')
+      .notNull()
+      .references(() => ozonCredential.id, { onDelete: 'cascade' }),
 
-  // 结果
-  result      Json?    // 完整的 API 响应结果
-  errorMessage String?  // 错误信息
+    // 请求参数 (JSON 存储)
+    articles: json('articles').notNull(), // ["123456", "789012"]
+    field: text('field').notNull(), // "offer_id" | "sku" | "vendor_code"
 
-  // 统计
-  totalArticles   Int?
-  processedArticles Int?
-  totalImages     Int?
-  successImages   Int?
-  failedImages    Int?
+    // 任务状态
+    status: text('status').notNull(), // "pending" | "processing" | "completed" | "failed"
+    progress: integer('progress').notNull().default(0), // 0-100
 
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+    // 任务结果 (JSON 存储)
+    result: json('result'), // 后端返回的完整结果
+    errorMessage: text('error_message'),
 
-  // 关联
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  credential  OzonCredential  @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+    // 统计数据 (从 result 中提取，便于查询)
+    totalArticles: integer('total_articles'),
+    processedArticles: integer('processed_articles'),
+    totalImages: integer('total_images'),
+    successImages: integer('success_images'),
+    failedImages: integer('failed_images'),
 
-  @@index([userId])
-  @@index([status])
-}
-
-// 系统配置表（可选，用于存储全局配置）
-model SystemConfig {
-  id          String   @id @default(cuid())
-  key         String   @unique
-  value       Json
-  description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
+    // 时间戳
+    startedAt: timestamp('started_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index('idx_ozon_task_user').on(table.userId),
+    index('idx_ozon_task_status').on(table.status),
+    index('idx_ozon_task_created').on(table.createdAt),
+  ]
+);
 ```
 
-### 4.2 数据库迁移
+### 3.2 数据库迁移
 
 ```bash
-# 初始化 Prisma
-npx prisma init
+# 生成迁移文件
+npx drizzle-kit generate:pg
 
-# 生成迁移
-npx prisma migrate dev --name init
+# 执行迁移
+npm run db:migrate
 
-# 生成 Prisma Client
-npx prisma generate
-
-# 打开 Prisma Studio 查看
-npx prisma studio
+# 或使用 Drizzle Kit
+npx drizzle-kit push:pg
 ```
 
-### 4.3 Supabase 表创建
+### 3.3 数据关系图
 
-```sql
--- 在 Supabase SQL Editor 中执行
-
--- 启用 Row Level Security
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ozon_credentials ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ozon_tasks ENABLE ROW LEVEL SECURITY;
-
--- 用户只能访问自己的数据
-CREATE POLICY "Users can view own data" ON users
-  FOR SELECT USING (auth.uid()::text = supabase_id);
-
-CREATE POLICY "Users can view own credentials" ON ozon_credentials
-  FOR SELECT USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can insert own credentials" ON ozon_credentials
-  FOR INSERT WITH CHECK (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can update own credentials" ON ozon_credentials
-  FOR UPDATE USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can delete own credentials" ON ozon_credentials
-  FOR DELETE USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can view own tasks" ON ozon_tasks
-  FOR SELECT USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can insert own tasks" ON ozon_tasks
-  FOR INSERT WITH CHECK (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can update own tasks" ON ozon_tasks
-  FOR UPDATE USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
-
-CREATE POLICY "Users can delete own tasks" ON ozon_tasks
-  FOR DELETE USING (auth.uid()::text = (SELECT supabaseId FROM users WHERE id = userId));
+```
+user (用户表)
+  ↓ 1:N
+ozon_credential (Ozon 凭证表)
+  ├─ id (主键)
+  ├─ userId (外键 → user.id)
+  ├─ name (凭证名称)
+  └─ encryptedData (加密的 client_id + api_key)
+      ↓ 1:N
+  ozon_task (下载任务表)
+    ├─ id (主键)
+    ├─ userId (外键 → user.id)
+    ├─ credentialId (外键 → ozon_credential.id)
+    ├─ articles (货号列表 JSON)
+    ├─ status (状态)
+    └─ result (结果 JSON)
 ```
 
 ---
 
-## 5. 用户认证
+## 4. 后端 API 说明
 
-### 5.1 Supabase 客户端配置
+### 4.1 API 端点概览
 
+| 端点 | 方法 | 功能 | 认证 |
+|------|------|------|------|
+| `/api/v1/health` | GET | 健康检查 | X-API-Key |
+| `/api/v1/ozon/download` | POST | 批量下载图片 | X-API-Key |
+
+### 4.2 健康检查 API
+
+**端点**: `GET /api/v1/health`
+
+**请求示例**:
 ```typescript
-// lib/supabase/client.ts
-// 浏览器端客户端
-
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import type { Database } from '@/types/database';
-
-export const createClient = () => {
-  return createClientComponentClient<Database>();
-};
-
-// 使用示例
-// const supabase = createClient();
-// const { data: { user } } = await supabase.auth.getUser();
+const response = await fetch(`${PYTHON_API_URL}/api/v1/health`, {
+  method: 'GET',
+  headers: {
+    'X-API-Key': PYTHON_API_KEY,
+  },
+});
 ```
 
-```typescript
-// lib/supabase/server.ts
-// 服务端客户端
-
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import type { Database } from '@/types/database';
-
-export const createServerClient = () => {
-  const cookieStore = cookies();
-  return createServerComponentClient<Database>({ cookies: cookieStore });
-};
-```
-
-```typescript
-// lib/supabase/middleware.ts
-// 路由保护中间件
-
-import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs';
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-
-export async function middleware(req: NextRequest) {
-  const res = NextResponse.next();
-  const supabase = createMiddlewareClient({ req, res });
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  // 未登录用户重定向到登录页
-  if (!session && req.nextUrl.pathname.startsWith('/dashboard')) {
-    return NextResponse.redirect(new URL('/login', req.url));
-  }
-
-  // 已登录用户访问登录页重定向到 dashboard
-  if (session && req.nextUrl.pathname === '/login') {
-    return NextResponse.redirect(new URL('/dashboard', req.url));
-  }
-
-  return res;
-}
-
-export const config = {
-  matcher: ['/dashboard/:path*', '/login'],
-};
-```
-
-### 5.2 认证 Hook
-
-```typescript
-// hooks/use-auth.ts
-
-import { useEffect, useState } from 'react';
-import { User } from '@supabase/supabase-js';
-import { createClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
-
-export function useAuth() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const router = useRouter();
-  const supabase = createClient();
-
-  useEffect(() => {
-    // 获取当前用户
-    const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
-      setLoading(false);
-    };
-
-    getUser();
-
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (session?.user) {
-          setUser(session.user);
-        } else {
-          setUser(null);
-        }
-        setLoading(false);
-      }
-    );
-
-    return () => subscription.unsubscribe();
-  }, [supabase.auth]);
-
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    router.push('/login');
-  };
-
-  return { user, loading, signOut };
-}
-```
-
-### 5.3 登录页面
-
-```typescript
-// app/(auth)/login/page.tsx
-
-'use client';
-
-import { useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2 } from 'lucide-react';
-
-export default function LoginPage() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
-  const supabase = createClient();
-
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-
-      // 登录成功，确保用户在本地数据库中存在
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        // 调用 API 同步用户到本地数据库
-        await fetch('/api/auth/sync-user', {
-          method: 'POST',
-        });
-      }
-
-      router.push('/dashboard');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败');
-    } finally {
-      setLoading(false);
+**响应示例**:
+```json
+{
+  "status": "healthy",
+  "version": "2.0.0",
+  "plugins": [
+    {
+      "name": "ozon-download",
+      "display_name": "Ozon 图片下载",
+      "category": "platform",
+      "enabled": true,
+      "healthy": true
     }
-  };
-
-  const handleSignUp = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-
-      setError('请检查邮箱以确认注册');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '注册失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>登录</CardTitle>
-          <CardDescription>输入您的邮箱和密码登录</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSignIn} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">邮箱</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="your@email.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            <div className="flex gap-2">
-              <Button type="submit" disabled={loading} className="flex-1">
-                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                登录
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={loading}
-                onClick={handleSignUp}
-              >
-                注册
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  ]
 }
 ```
 
-### 5.4 用户同步 API
+### 4.3 Ozon 下载 API (核心)
 
-```typescript
-// app/api/auth/sync-user/route.ts
+**端点**: `POST /api/v1/ozon/download`
 
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+**请求头**:
+```http
+X-API-Key: your-shared-secret
+Content-Type: application/json
+```
 
-export async function POST() {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // 同步用户到本地数据库
-  const dbUser = await prisma.user.upsert({
-    where: { supabaseId: user.id },
-    update: {
-      email: user.email!,
-      name: user.user_metadata.name,
-    },
-    create: {
-      supabaseId: user.id,
-      email: user.email!,
-      name: user.user_metadata.name,
-    },
-  });
-
-  return NextResponse.json({ user: dbUser });
+**请求体**:
+```json
+{
+  "credential": {
+    "client_id": "ozon_client_id_here",
+    "api_key": "ozon_api_key_here"
+  },
+  "articles": ["123456", "789012", "345678"],
+  "field": "offer_id",
+  "user_id": "user_abc123"
 }
 ```
+
+**请求参数说明**:
+
+| 参数 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `credential.client_id` | string | ✅ | Ozon Seller API Client ID |
+| `credential.api_key` | string | ✅ | Ozon Seller API Key |
+| `articles` | string[] | ✅ | 货号列表 (1-100个) |
+| `field` | string | ❌ | 查询字段，默认 `offer_id`，可选: `sku`、`vendor_code` |
+| `user_id` | string | ✅ | 用户 ID (用于 R2 路径隔离) |
+
+**成功响应** (200 OK):
+```json
+{
+  "success": true,
+  "data": {
+    "total_articles": 3,
+    "processed": 3,
+    "total_images": 24,
+    "success_images": 24,
+    "failed_images": 0,
+    "items": [
+      {
+        "article": "123456",
+        "product_id": 123456789,
+        "status": "success",
+        "total_images": 8,
+        "success_images": 8,
+        "failed_images": 0,
+        "urls": [
+          "https://your-r2-domain.com/users/user_abc123/ozon/123456/123456_1.jpg",
+          "https://your-r2-domain.com/users/user_abc123/ozon/123456/123456_2.jpg",
+          "https://your-r2-domain.com/users/user_abc123/ozon/123456/123456_3.jpg"
+        ]
+      },
+      {
+        "article": "789012",
+        "product_id": 987654321,
+        "status": "success",
+        "total_images": 8,
+        "success_images": 8,
+        "failed_images": 0,
+        "urls": [
+          "https://your-r2-domain.com/users/user_abc123/ozon/789012/789012_1.jpg"
+        ]
+      },
+      {
+        "article": "345678",
+        "product_id": 345678901,
+        "status": "failed",
+        "total_images": 0,
+        "success_images": 0,
+        "failed_images": 0,
+        "error": "Product not found"
+      }
+    ]
+  },
+  "execution_time_ms": 5234
+}
+```
+
+**失败响应** (4xx/5xx):
+```json
+{
+  "success": false,
+  "data": null,
+  "error": "Invalid Ozon credentials"
+}
+```
+
+### 4.4 错误代码说明
+
+| HTTP 状态 | 错误信息 | 说明 | 前端处理建议 |
+|----------|---------|------|-------------|
+| 401 | Unauthorized | API Key 无效 | 检查环境变量配置 |
+| 400 | Invalid credentials | Ozon 凭证无效 | 提示用户检查凭证 |
+| 404 | Product not found | 货号不存在 | 显示失败列表 |
+| 500 | Download failed | 下载失败 | 提示重试或联系支持 |
 
 ---
 
-## 6. API 客户端
+## 5. 前端集成步骤
 
-### 6.1 类型定义
+### 5.1 创建 API 客户端
+
+**文件**: `src/lib/api/ozon.ts`
 
 ```typescript
-// types/ozon.ts
+/**
+ * Ozon API 客户端
+ * 与 Python 后端交互的封装
+ */
 
-export interface OzonCredential {
+interface OzonCredential {
   client_id: string;
   api_key: string;
 }
 
-export interface OzonDownloadRequest {
+interface OzonDownloadRequest {
   credential: OzonCredential;
   articles: string[];
   field?: 'offer_id' | 'sku' | 'vendor_code';
   user_id: string;
 }
 
-export interface OzonDownloadResponse {
-  success: boolean;
-  data?: OzonDownloadResult;
-  error?: string;
-}
-
-export interface OzonDownloadResult {
-  total_articles: number;
-  processed: number;
-  total_images: number;
-  success_images: number;
-  failed_images: number;
-  items: OzonDownloadItem[];
-}
-
-export interface OzonDownloadItem {
+interface OzonDownloadItem {
   article: string;
   product_id?: number;
   status: 'success' | 'failed';
@@ -620,1106 +552,332 @@ export interface OzonDownloadItem {
   error?: string;
 }
 
-// Prisma 模型类型
-export interface DbOzonCredential {
-  id: string;
-  userId: string;
-  name: string;
-  encryptedData: string;
-  createdAt: Date;
-  updatedAt: Date;
+interface OzonDownloadResult {
+  total_articles: number;
+  processed: number;
+  total_images: number;
+  success_images: number;
+  failed_images: number;
+  items: OzonDownloadItem[];
 }
 
-export interface DbOzonTask {
-  id: string;
-  userId: string;
-  credentialId: string;
-  articles: unknown;
-  field: string;
-  status: string;
-  progress: number;
-  result: unknown | null;
-  errorMessage: string | null;
-  totalArticles: number | null;
-  processedArticles: number | null;
-  totalImages: number | null;
-  successImages: number | null;
-  failedImages: number | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
+interface OzonDownloadResponse {
+  success: boolean;
+  data?: OzonDownloadResult;
+  error?: string;
+  execution_time_ms?: number;
 }
+
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8000';
+const PYTHON_API_KEY = process.env.PYTHON_API_KEY || '';
+
+export class OzonApiClient {
+  /**
+   * 调用后端下载 API
+   */
+  async downloadImages(request: OzonDownloadRequest): Promise<OzonDownloadResponse> {
+    try {
+      const response = await fetch(`${PYTHON_API_URL}/api/v1/ozon/download`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': PYTHON_API_KEY,
+        },
+        body: JSON.stringify(request),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API Error ${response.status}: ${errorText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Ozon download API error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 健康检查
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await fetch(`${PYTHON_API_URL}/api/v1/health`, {
+        headers: {
+          'X-API-Key': PYTHON_API_KEY,
+        },
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// 单例导出
+export const ozonApi = new OzonApiClient();
 ```
 
-### 6.2 加密工具
+### 5.2 凭证加密工具
+
+**文件**: `src/lib/crypto.ts`
 
 ```typescript
-// lib/crypto.ts
-
+/**
+ * 凭证加密/解密工具
+ * 使用 AES 加密存储 Ozon API 凭证
+ */
 import CryptoJS from 'crypto-js';
 
-const ENCRYPTION_KEY = process.env.NEXT_PUBLIC_ENCRYPTION_KEY;
+const ENCRYPTION_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY || '';
 
 if (!ENCRYPTION_KEY) {
-  throw new Error('NEXT_PUBLIC_ENCRYPTION_KEY is not set');
+  throw new Error('CREDENTIAL_ENCRYPTION_KEY is not set in environment variables');
 }
 
-export interface OzonCredential {
+export interface OzonCredentialPlain {
   client_id: string;
   api_key: string;
 }
 
-export function encryptCredential(credential: OzonCredential): string {
+/**
+ * 加密凭证
+ */
+export function encryptCredential(credential: OzonCredentialPlain): string {
   const plaintext = JSON.stringify(credential);
-  return CryptoJS.AES.encrypt(plaintext, ENCRYPTION_KEY).toString();
+  const encrypted = CryptoJS.AES.encrypt(plaintext, ENCRYPTION_KEY);
+  return encrypted.toString();
 }
 
-export function decryptCredential(ciphertext: string): OzonCredential {
-  const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
-  const plaintext = bytes.toString(CryptoJS.enc.Utf8);
+/**
+ * 解密凭证
+ */
+export function decryptCredential(ciphertext: string): OzonCredentialPlain {
+  const decrypted = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
+  const plaintext = decrypted.toString(CryptoJS.enc.Utf8);
+
+  if (!plaintext) {
+    throw new Error('Failed to decrypt credential');
+  }
+
   return JSON.parse(plaintext);
 }
 ```
 
-### 6.3 Ozon API 客户端
+### 5.3 数据库操作 (Drizzle ORM)
+
+**文件**: `src/lib/db/ozon.ts`
 
 ```typescript
-// lib/api/ozon.ts
+/**
+ * Ozon 相关数据库操作
+ */
+import { db } from '@/core/db';
+import { ozonCredential, ozonTask } from '@/config/db/schema';
+import { eq, desc } from 'drizzle-orm';
+import { cuid } from '@/shared/lib/utils';
+import type { OzonCredentialPlain } from '@/lib/crypto';
 
-import type {
-  OzonDownloadRequest,
-  OzonDownloadResponse,
-} from '@/types/ozon';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY;
-
-if (!API_URL || !API_KEY) {
-  throw new Error('API_URL or API_KEY is not configured');
+export interface CreateOzonCredentialInput {
+  userId: string;
+  name: string;
+  encryptedData: string;
 }
 
-export async function downloadOzonImages(
-  request: OzonDownloadRequest
-): Promise<OzonDownloadResponse> {
-  try {
-    const response = await fetch(`${API_URL}/api/v1/ozon/download`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': API_KEY,
-      },
-      body: JSON.stringify(request),
-    });
+export interface CreateOzonTaskInput {
+  userId: string;
+  credentialId: string;
+  articles: string[];
+  field: string;
+}
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`API Error ${response.status}: ${error}`);
+export class OzonDb {
+  /**
+   * 创建 Ozon 凭证
+   */
+  async createCredential(input: CreateOzonCredentialInput) {
+    const [credential] = await db
+      .insert(ozonCredential)
+      .values({
+        id: cuid(),
+        userId: input.userId,
+        name: input.name,
+        encryptedData: input.encryptedData,
+      })
+      .returning();
+
+    return credential;
+  }
+
+  /**
+   * 获取用户的所有凭证
+   */
+  async getUserCredentials(userId: string) {
+    return await db
+      .select()
+      .from(ozonCredential)
+      .where(eq(ozonCredential.userId, userId))
+      .orderBy(desc(ozonCredential.createdAt));
+  }
+
+  /**
+   * 获取单个凭证
+   */
+  async getCredential(id: string, userId: string) {
+    const [credential] = await db
+      .select()
+      .from(ozonCredential)
+      .where(eq(ozonCredential.id, id))
+      .limit(1);
+
+    // 验证所有权
+    if (credential && credential.userId !== userId) {
+      throw new Error('Credential not found or access denied');
     }
 
-    return response.json();
-  } catch (error) {
-    console.error('Ozon download error:', error);
-    throw error;
+    return credential;
+  }
+
+  /**
+   * 删除凭证
+   */
+  async deleteCredential(id: string, userId: string) {
+    const credential = await this.getCredential(id, userId);
+    if (!credential) {
+      throw new Error('Credential not found');
+    }
+
+    await db.delete(ozonCredential).where(eq(ozonCredential.id, id));
+  }
+
+  /**
+   * 创建下载任务
+   */
+  async createTask(input: CreateOzonTaskInput) {
+    const [task] = await db
+      .insert(ozonTask)
+      .values({
+        id: cuid(),
+        userId: input.userId,
+        credentialId: input.credentialId,
+        articles: input.articles as any, // JSON 类型
+        field: input.field,
+        status: 'pending',
+        progress: 0,
+      })
+      .returning();
+
+    return task;
+  }
+
+  /**
+   * 更新任务状态
+   */
+  async updateTask(
+    taskId: string,
+    userId: string,
+    updates: {
+      status?: string;
+      progress?: number;
+      result?: any;
+      errorMessage?: string;
+      totalArticles?: number;
+      processedArticles?: number;
+      totalImages?: number;
+      successImages?: number;
+      failedImages?: number;
+      startedAt?: Date;
+      completedAt?: Date;
+    }
+  ) {
+    // 验证任务所有权
+    const [task] = await db
+      .select()
+      .from(ozonTask)
+      .where(eq(ozonTask.id, taskId))
+      .limit(1);
+
+    if (!task || task.userId !== userId) {
+      throw new Error('Task not found or access denied');
+    }
+
+    await db
+      .update(ozonTask)
+      .set({
+        ...updates,
+        result: updates.result as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(ozonTask.id, taskId));
+  }
+
+  /**
+   * 获取用户的任务列表
+   */
+  async getUserTasks(userId: string, limit = 20) {
+    return await db
+      .select()
+      .from(ozonTask)
+      .where(eq(ozonTask.userId, userId))
+      .orderBy(desc(ozonTask.createdAt))
+      .limit(limit);
+  }
+
+  /**
+   * 获取单个任务
+   */
+  async getTask(taskId: string, userId: string) {
+    const [task] = await db
+      .select()
+      .from(ozonTask)
+      .where(eq(ozonTask.id, taskId))
+      .limit(1);
+
+    if (task && task.userId !== userId) {
+      throw new Error('Task not found or access denied');
+    }
+
+    return task;
   }
 }
 
-export async function checkApiHealth(): Promise<boolean> {
-  try {
-    const response = await fetch(`${API_URL}/api/v1/health`, {
-      headers: {
-        'X-API-Key': API_KEY,
-      },
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
+export const ozonDb = new OzonDb();
 ```
 
----
+### 5.4 React Hook 集成
 
-## 7. 状态管理
-
-### 7.1 Zustand Store
+**文件**: `src/app/hooks/use-ozon-download.ts`
 
 ```typescript
-// stores/ozon-store.ts
-
-import { create } from 'zustand';
-import type { DbOzonCredential, DbOzonTask } from '@/types/ozon';
-
-interface OzonState {
-  // 凭证
-  credentials: DbOzonCredential[];
-  selectedCredentialId: string | null;
-  setCredentials: (credentials: DbOzonCredential[]) => void;
-  setSelectedCredentialId: (id: string | null) => void;
-
-  // 任务
-  tasks: DbOzonTask[];
-  activeTaskId: string | null;
-  setTasks: (tasks: DbOzonTask[]) => void;
-  setActiveTaskId: (id: string | null) => void;
-  updateTask: (id: string, updates: Partial<DbOzonTask>) => void;
-
-  // UI 状态
-  isLoading: boolean;
-  setIsLoading: (loading: boolean) => void;
-  error: string | null;
-  setError: (error: string | null) => void;
-}
-
-export const useOzonStore = create<OzonState>((set) => ({
-  // 初始状态
-  credentials: [],
-  selectedCredentialId: null,
-  tasks: [],
-  activeTaskId: null,
-  isLoading: false,
-  error: null,
-
-  // 凭证操作
-  setCredentials: (credentials) => set({ credentials }),
-  setSelectedCredentialId: (id) => set({ selectedCredentialId: id }),
-
-  // 任务操作
-  setTasks: (tasks) => set({ tasks }),
-  setActiveTaskId: (id) => set({ activeTaskId: id }),
-  updateTask: (id, updates) =>
-    set((state) => ({
-      tasks: state.tasks.map((t) =>
-        t.id === id ? { ...t, ...updates } : t
-      ),
-    })),
-
-  // UI 状态
-  setIsLoading: (loading) => set({ isLoading: loading }),
-  setError: (error) => set({ error }),
-}));
-```
-
----
-
-## 8. 页面实现
-
-### 8.1 Dashboard 布局
-
-```typescript
-// app/(dashboard)/layout.tsx
-
-import { createServerClient } from '@/lib/supabase/server';
-import { redirect } from 'next/navigation';
-import { Sidebar } from '@/components/dashboard/sidebar';
-import { Header } from '@/components/dashboard/header';
-
-export default async function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const supabase = createServerClient();
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  if (!session) {
-    redirect('/login');
-  }
-
-  return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header user={session.user} />
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
-        </main>
-      </div>
-    </div>
-  );
-}
-```
-
-### 8.2 Dashboard 首页
-
-```typescript
-// app/(dashboard)/dashboard/page.tsx
-
-import { createServerClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/prisma';
-import { StatsCard } from '@/components/dashboard/stats-card';
-import { Package, Key, CheckCircle, AlertCircle } from 'lucide-react';
-
-export default async function DashboardPage() {
-  const supabase = createServerClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return null;
-  }
-
-  // 获取本地用户 ID
-  const dbUser = await prisma.user.findUnique({
-    where: { supabaseId: user.id },
-  });
-
-  if (!dbUser) {
-    return null;
-  }
-
-  // 获取统计数据
-  const [credentialCount, taskCount, completedTasks, failedTasks] =
-    await Promise.all([
-      prisma.ozonCredential.count({ where: { userId: dbUser.id } }),
-      prisma.ozonTask.count({ where: { userId: dbUser.id } }),
-      prisma.ozonTask.count({
-        where: { userId: dbUser.id, status: 'completed' },
-      }),
-      prisma.ozonTask.count({
-        where: { userId: dbUser.id, status: 'failed' },
-      }),
-    ]);
-
-  // 最近任务
-  const recentTasks = await prisma.ozonTask.findMany({
-    where: { userId: dbUser.id },
-    include: { credential: true },
-    orderBy: { createdAt: 'desc' },
-    take: 5,
-  });
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Dashboard</h1>
-        <p className="text-gray-500 mt-1">欢迎使用 Ozon 图片下载工具</p>
-      </div>
-
-      {/* 统计卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatsCard
-          title="已配置店铺"
-          value={credentialCount}
-          icon={<Key className="h-6 w-6" />}
-          href="/dashboard/ozon/credentials"
-        />
-        <StatsCard
-          title="总任务数"
-          value={taskCount}
-          icon={<Package className="h-6 w-6" />}
-          href="/dashboard/ozon/tasks"
-        />
-        <StatsCard
-          title="成功任务"
-          value={completedTasks}
-          icon={<CheckCircle className="h-6 w-6 text-green-600" />}
-          href="/dashboard/ozon/tasks?status=completed"
-        />
-        <StatsCard
-          title="失败任务"
-          value={failedTasks}
-          icon={<AlertCircle className="h-6 w-6 text-red-600" />}
-          href="/dashboard/ozon/tasks?status=failed"
-        />
-      </div>
-
-      {/* 最近任务 */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">最近任务</h2>
-        {recentTasks.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">
-            还没有任务，开始创建第一个下载任务吧！
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {recentTasks.map((task) => (
-              <div
-                key={task.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-              >
-                <div>
-                  <p className="font-medium">{task.credential.name}</p>
-                  <p className="text-sm text-gray-500">
-                    {task.totalArticles || 0} 个货号 · {task.createdAt.toLocaleString()}
-                  </p>
-                </div>
-                <span
-                  className={`px-3 py-1 rounded-full text-sm ${
-                    task.status === 'completed'
-                      ? 'bg-green-100 text-green-800'
-                      : task.status === 'failed'
-                      ? 'bg-red-100 text-red-800'
-                      : 'bg-blue-100 text-blue-800'
-                  }`}
-                >
-                  {task.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-```
-
-### 8.3 凭证管理页面
-
-```typescript
-// app/(dashboard)/ozon/credentials/page.tsx
-
+/**
+ * Ozon 下载功能 Hook
+ */
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useAuth } from '@/hooks/use-auth';
-import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Edit, Trash2, Key } from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import { CredentialForm } from '@/components/ozon/credential-form';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { useOzonStore } from '@/stores/ozon-store';
-import type { DbOzonCredential } from '@/types/ozon';
-import { createClient } from '@/lib/supabase/client';
+import { useState } from 'react';
+import { useSession } from 'next-auth/react';
+import { ozonApi } from '@/lib/api/ozon';
+import { ozonDb } from '@/lib/db/ozon';
 import { decryptCredential } from '@/lib/crypto';
-
-export default function CredentialsPage() {
-  const { user } = useAuth();
-  const router = useRouter();
-  const supabase = createClient();
-  const { credentials, setCredentials } = useOzonStore();
-
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingCredential, setEditingCredential] =
-    useState<DbOzonCredential | null>(null);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (user) fetchCredentials();
-  }, [user]);
-
-  const fetchCredentials = async () => {
-    const response = await fetch('/api/ozon/credentials');
-    if (response.ok) {
-      const data = await response.json();
-      setCredentials(data);
-    }
-  };
-
-  const handleEdit = (credential: DbOzonCredential) => {
-    setEditingCredential(credential);
-    setDialogOpen(true);
-  };
-
-  const handleDelete = async () => {
-    if (!deletingId) return;
-
-    const response = await fetch(`/api/ozon/credentials/${deletingId}`, {
-      method: 'DELETE',
-    });
-
-    if (response.ok) {
-      setCredentials(credentials.filter((c) => c.id !== deletingId));
-      setDeleteDialogOpen(false);
-      setDeletingId(null);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Ozon 店铺管理</h1>
-          <p className="text-gray-500 mt-1">管理您的 Ozon API 凭证</p>
-        </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => setEditingCredential(null)}>
-              <Plus className="mr-2 h-4 w-4" />
-              添加店铺
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {editingCredential ? '编辑店铺' : '添加店铺'}
-              </DialogTitle>
-            </DialogHeader>
-            <CredentialForm
-              credential={editingCredential}
-              onSuccess={() => {
-                setDialogOpen(false);
-                setEditingCredential(null);
-                fetchCredentials();
-              }}
-            />
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      {credentials.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Key className="h-12 w-12 text-gray-400 mb-4" />
-            <p className="text-gray-500 mb-4">还没有配置任何店铺</p>
-            <Button onClick={() => setDialogOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              添加第一个店铺
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {credentials.map((credential) => (
-            <Card key={credential.id} className="hover:shadow-lg transition">
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="flex items-center">
-                  <Key className="mr-2 h-5 w-5 text-blue-600" />
-                  {credential.name}
-                </CardTitle>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleEdit(credential)}
-                  >
-                    <Edit className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setDeletingId(credential.id);
-                      setDeleteDialogOpen(true);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4 text-red-600" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-gray-500">
-                  创建于 {new Date(credential.createdAt).toLocaleDateString()}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认删除</AlertDialogTitle>
-            <AlertDialogDescription>
-              删除后无法恢复，确定要删除这个店铺配置吗？
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>
-              删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  );
-}
-```
-
-### 8.4 下载任务页面
-
-```typescript
-// app/(dashboard)/ozon/download/page.tsx
-
-'use client';
-
-import { useState } from 'react';
-import { useAuth } from '@/hooks/use-auth';
-import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Download } from 'lucide-react';
-import { DownloadForm } from '@/components/ozon/download-form';
-import { useOzonStore } from '@/stores/ozon-store';
-import { useOzonDownload } from '@/hooks/use-ozon-download';
-import { Progress } from '@/components/ui/progress';
-import { CheckCircle, XCircle, AlertCircle } from 'lucide-react';
-
-export default function DownloadPage() {
-  const { user } = useAuth();
-  const router = useRouter();
-  const { credentials, selectedCredentialId, setSelectedCredentialId } =
-    useOzonStore();
-  const { download, isLoading, error, result } = useOzonDownload();
-
-  const handleDownload = async (data: {
-    credentialId: string;
-    articles: string[];
-    field: 'offer_id' | 'sku' | 'vendor_code';
-  }) => {
-    await download(data);
-
-    // 下载完成后跳转到任务列表
-    if (result) {
-      router.push('/dashboard/ozon/tasks');
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">下载 Ozon 图片</h1>
-        <p className="text-gray-500 mt-1">批量下载 Ozon 商品图片</p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 下载表单 */}
-        <div className="lg:col-span-2">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <Download className="mr-2 h-5 w-5" />
-                创建下载任务
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {credentials.length === 0 ? (
-                <div className="text-center py-8">
-                  <p className="text-gray-500 mb-4">
-                    请先添加 Ozon 店铺凭证
-                  </p>
-                  <Button onClick={() => router.push('/dashboard/ozon/credentials')}>
-                    添加店铺
-                  </Button>
-                </div>
-              ) : (
-                <DownloadForm
-                  credentials={credentials}
-                  selectedCredentialId={selectedCredentialId}
-                  onCredentialChange={setSelectedCredentialId}
-                  onSubmit={handleDownload}
-                  isLoading={isLoading}
-                  error={error}
-                />
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* 结果预览 */}
-        <div>
-          <Card>
-            <CardHeader>
-              <CardTitle>下载结果</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <div className="space-y-4">
-                  <p className="text-sm text-gray-500">正在处理...</p>
-                  <Progress value={66} />
-                </div>
-              ) : result ? (
-                <div className="space-y-4">
-                  <div className="flex items-center text-green-600">
-                    <CheckCircle className="mr-2 h-5 w-5" />
-                    <span>下载完成</span>
-                  </div>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span>总货号数:</span>
-                      <span className="font-medium">
-                        {result.total_articles}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>总图片数:</span>
-                      <span className="font-medium">
-                        {result.total_images}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-green-600">
-                      <span>成功:</span>
-                      <span className="font-medium">
-                        {result.success_images}
-                      </span>
-                    </div>
-                    {result.failed_images > 0 && (
-                      <div className="flex justify-between text-red-600">
-                        <span>失败:</span>
-                        <span className="font-medium">
-                          {result.failed_images}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    className="w-full"
-                    onClick={() => router.push('/dashboard/ozon/tasks')}
-                  >
-                    查看详情
-                  </Button>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
-  );
-}
-```
-
----
-
-## 9. 组件实现
-
-### 9.1 凭证表单组件
-
-```typescript
-// components/ozon/credential-form.tsx
-
-'use client';
-
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as z from 'zod';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
-import { encryptCredential, decryptCredential } from '@/lib/crypto';
-import type { DbOzonCredential } from '@/types/ozon';
-import { createClient } from '@/lib/supabase/client';
-
-const credentialSchema = z.object({
-  name: z.string().min(1, '店铺名称不能为空'),
-  client_id: z.string().min(1, 'Client ID 不能为空'),
-  api_key: z.string().min(1, 'API Key 不能为空'),
-});
-
-type CredentialFormData = z.infer<typeof credentialSchema>;
-
-interface CredentialFormProps {
-  credential?: DbOzonCredential | null;
-  onSuccess?: () => void;
-}
-
-export function CredentialForm({ credential, onSuccess }: CredentialFormProps) {
-  const [loading, setLoading] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const supabase = createClient();
-
-  const form = useForm<CredentialFormData>({
-    resolver: zodResolver(credentialSchema),
-    defaultValues: credential
-      ? {
-          name: credential.name,
-          client_id: '',
-          api_key: '',
-        }
-      : {
-          name: '',
-          client_id: '',
-          api_key: '',
-        },
-  });
-
-  const onSubmit = async (data: CredentialFormData) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) throw new Error('未登录');
-
-      // 加密凭证
-      const encryptedData = encryptCredential({
-        client_id: data.client_id,
-        api_key: data.api_key,
-      });
-
-      const body = {
-        name: data.name,
-        encryptedData,
-      };
-
-      const url = credential
-        ? `/api/ozon/credentials/${credential.id}`
-        : '/api/ozon/credentials';
-
-      const response = await fetch(url, {
-        method: credential ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || '操作失败');
-      }
-
-      onSuccess?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '操作失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>店铺名称</FormLabel>
-              <FormControl>
-                <Input
-                  placeholder="例如：我的主店铺"
-                  {...field}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="client_id"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Client ID</FormLabel>
-              <FormControl>
-                <Input placeholder="输入 Ozon Client ID" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="api_key"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>API Key</FormLabel>
-              <FormControl>
-                <div className="relative">
-                  <Input
-                    type={showApiKey ? 'text' : 'password'}
-                    placeholder="输入 Ozon API Key"
-                    {...field}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2"
-                  >
-                    {showApiKey ? (
-                      <EyeOff className="h-4 w-4 text-gray-500" />
-                    ) : (
-                      <Eye className="h-4 w-4 text-gray-500" />
-                    )}
-                  </button>
-                </div>
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {error && (
-          <div className="text-sm text-red-600 bg-red-50 p-3 rounded">
-            {error}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button type="submit" disabled={loading} className="flex-1">
-            {loading ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                保存中...
-              </>
-            ) : (
-              <>
-                {credential ? '更新' : '添加'}
-              </>
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => form.reset()}
-          >
-            重置
-          </Button>
-        </div>
-      </form>
-    </Form>
-  );
-}
-```
-
-### 9.2 下载表单组件
-
-```typescript
-// components/ozon/download-form.tsx
-
-'use client';
-
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as z from 'zod';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form';
-import { Loader2, Upload } from 'lucide-react';
-import type { DbOzonCredential } from '@/types/ozon';
-
-const downloadSchema = z.object({
-  credentialId: z.string().min(1, '请选择店铺'),
-  articles: z.string().min(1, '请输入货号'),
-  field: z.enum(['offer_id', 'sku', 'vendor_code']),
-});
-
-type DownloadFormData = z.infer<typeof downloadSchema>;
-
-interface DownloadFormProps {
-  credentials: DbOzonCredential[];
-  selectedCredentialId: string | null;
-  onCredentialChange: (id: string) => void;
-  onSubmit: (data: {
-    credentialId: string;
-    articles: string[];
-    field: 'offer_id' | 'sku' | 'vendor_code';
-  }) => void;
-  isLoading: boolean;
-  error?: string | null;
-}
-
-export function DownloadForm({
-  credentials,
-  selectedCredentialId,
-  onCredentialChange,
-  onSubmit,
-  isLoading,
-  error,
-}: DownloadFormProps) {
-  const form = useForm<DownloadFormData>({
-    resolver: zodResolver(downloadSchema),
-    defaultValues: {
-      credentialId: selectedCredentialId || '',
-      articles: '',
-      field: 'offer_id',
-    },
-  });
-
-  const handleSubmit = (data: DownloadFormData) => {
-    const articles = data.articles
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    onSubmit({
-      credentialId: data.credentialId,
-      articles,
-      field: data.field,
-    });
-  };
-
-  return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-6">
-        <FormField
-          control={form.control}
-          name="credentialId"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>选择店铺</FormLabel>
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value);
-                  onCredentialChange(value);
-                }}
-                defaultValue={field.value}
-              >
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择一个店铺" />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {credentials.map((cred) => (
-                    <SelectItem key={cred.id} value={cred.id}>
-                      {cred.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="field"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>查询字段</FormLabel>
-              <Select
-                onValueChange={field.onChange}
-                defaultValue={field.value}
-              >
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  <SelectItem value="offer_id">Offer ID (推荐)</SelectItem>
-                  <SelectItem value="sku">SKU</SelectItem>
-                  <SelectItem value="vendor_code">Vendor Code</SelectItem>
-                </SelectContent>
-              </Select>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="articles"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>货号列表</FormLabel>
-              <FormControl>
-                <Textarea
-                  placeholder="输入货号，每行一个&#10;例如：&#10;123456&#10;789012&#10;345678"
-                  className="min-h-[200px] font-mono"
-                  {...field}
-                />
-              </FormControl>
-              <p className="text-sm text-gray-500">
-                每行一个货号，支持批量下载
-              </p>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {error && (
-          <div className="text-sm text-red-600 bg-red-50 p-3 rounded">
-            {error}
-          </div>
-        )}
-
-        <Button type="submit" disabled={isLoading} className="w-full">
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              下载中...
-            </>
-          ) : (
-            <>
-              <Upload className="mr-2 h-4 w-4" />
-              开始下载
-            </>
-          )}
-        </Button>
-      </form>
-    </Form>
-  );
-}
-```
-
-### 9.3 下载 Hook
-
-```typescript
-// hooks/use-ozon-download.ts
-
-'use client';
-
-import { useState } from 'react';
-import { useAuth } from './use-auth';
-import { downloadOzonImages } from '@/lib/api/ozon';
-import { decryptCredential } from '@/lib/crypto';
-import type { OzonDownloadResult } from '@/types/ozon';
-import { createClient } from '@/lib/supabase/client';
 
 export function useOzonDownload() {
-  const { user } = useAuth();
+  const { data: session } = useSession();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<OzonDownloadResult | null>(null);
-  const supabase = createClient();
+  const [result, setResult] = useState<any>(null);
 
-  const download = async (data: {
+  /**
+   * 执行下载任务
+   */
+  const download = async (input: {
     credentialId: string;
     articles: string[];
     field: 'offer_id' | 'sku' | 'vendor_code';
   }) => {
-    if (!user) {
+    if (!session?.user?.id) {
       setError('请先登录');
-      return;
+      return null;
     }
 
     setIsLoading(true);
@@ -1727,40 +885,45 @@ export function useOzonDownload() {
     setResult(null);
 
     try {
-      // 1. 获取加密的凭证
-      const credResponse = await fetch(
-        `/api/ozon/credentials/${data.credentialId}`
+      // 1. 从数据库获取加密的凭证
+      const credentialRecord = await ozonDb.getCredential(
+        input.credentialId,
+        session.user.id
       );
 
-      if (!credResponse.ok) {
-        throw new Error('获取凭证失败');
+      if (!credentialRecord) {
+        throw new Error('凭证不存在');
       }
-
-      const credential = await credResponse.json();
 
       // 2. 解密凭证
-      const decryptedCred = decryptCredential(credential.encryptedData);
+      const credential = decryptCredential(credentialRecord.encryptedData);
 
-      // 3. 调用后端 API
-      const response = await downloadOzonImages({
-        credential: decryptedCred,
-        articles: data.articles,
-        field: data.field,
-        user_id: user.id,
+      // 3. 创建任务记录
+      const task = await ozonDb.createTask({
+        userId: session.user.id,
+        credentialId: input.credentialId,
+        articles: input.articles,
+        field: input.field,
       });
 
-      if (!response.success || !response.data) {
-        throw new Error(response.error || '下载失败');
-      }
+      // 4. 更新任务状态为处理中
+      await ozonDb.updateTask(task.id, session.user.id, {
+        status: 'processing',
+        progress: 0,
+        startedAt: new Date(),
+      });
 
-      // 4. 保存任务到数据库
-      const taskResponse = await fetch('/api/ozon/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credentialId: data.credentialId,
-          articles: data.articles,
-          field: data.field,
+      // 5. 调用后端 API
+      const response = await ozonApi.downloadImages({
+        credential: credential,
+        articles: input.articles,
+        field: input.field,
+        user_id: session.user.id,
+      });
+
+      // 6. 保存结果
+      if (response.success && response.data) {
+        await ozonDb.updateTask(task.id, session.user.id, {
           status: 'completed',
           progress: 100,
           result: response.data,
@@ -1769,394 +932,395 @@ export function useOzonDownload() {
           totalImages: response.data.total_images,
           successImages: response.data.success_images,
           failedImages: response.data.failed_images,
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-        }),
-      });
+          completedAt: new Date(),
+        });
 
-      if (!taskResponse.ok) {
-        console.error('保存任务失败:', await taskResponse.text());
+        setResult(response.data);
+        return { task, result: response.data };
+      } else {
+        throw new Error(response.error || '下载失败');
       }
-
-      setResult(response.data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '下载失败');
+      const errorMessage = err instanceof Error ? err.message : '未知错误';
+      setError(errorMessage);
+      return null;
     } finally {
       setIsLoading(false);
     }
   };
 
-  return { download, isLoading, error, result };
+  return {
+    download,
+    isLoading,
+    error,
+    result,
+  };
 }
 ```
 
 ---
 
-## 10. 集成步骤
+## 6. 核心代码实现
 
-### 10.1 项目初始化
+### 6.1 API 路由示例
 
-```bash
-# 1. 创建 Next.js 项目
-npx create-next-app@latest frontend --typescript --tailwind --app
-cd frontend
-
-# 2. 安装依赖
-npm install @supabase/supabase-js @supabase/auth-helpers-nextjs
-npm install zustand react-hook-form @hookform/resolvers zod
-npm install crypto-js prisma @prisma/client
-npm install -D @types/crypto-js
-
-# 3. 配置 shadcn/ui
-npx shadcn-ui@latest init
-npx shadcn-ui@latest add button card input label textarea
-npx shadcn-ui@latest add table dialog form select alert
-npx shadcn-ui@latest add badge progress toast
-
-# 4. 创建环境变量文件
-cp .env.example .env.local
-# 填写 Supabase 和后端 API 配置
-```
-
-### 10.2 数据库配置
-
-```bash
-# 1. 配置 Prisma
-npx prisma init
-
-# 2. 复制 schema 到 prisma/schema.prisma
-# (使用上面的 Prisma Schema)
-
-# 3. 设置 DATABASE_URL
-# .env.local
-DATABASE_URL="postgresql://user:password@host:5432/database"
-
-# 4. 生成并运行迁移
-npx prisma migrate dev --name init
-
-# 5. 生成 Prisma Client
-npx prisma generate
-```
-
-### 10.3 创建 API Routes
+**文件**: `src/app/api/ozon/credentials/route.ts`
 
 ```typescript
-// app/api/ozon/credentials/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/core/auth';
+import { ozonDb } from '@/lib/db/ozon';
+import { encryptCredential } from '@/lib/crypto';
+import { z } from 'zod';
 
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+const createCredentialSchema = z.object({
+  name: z.string().min(1, '凭证名称不能为空'),
+  client_id: z.string().min(1, 'Client ID 不能为空'),
+  api_key: z.string().min(1, 'API Key 不能为空'),
+});
 
-// GET - 获取所有凭证
-export async function GET() {
-  const supabase = createRouteHandlerClient({ cookies });
+// GET - 获取当前用户的凭证列表
+export async function GET(req: NextRequest) {
+  try {
+    const session = await auth();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const credentials = await ozonDb.getUserCredentials(session.user.id);
+
+    // 不返回加密数据给前端
+    const safeCredentials = credentials.map(({ encryptedData, ...rest }) => rest);
+
+    return NextResponse.json(safeCredentials);
+  } catch (error) {
+    console.error('Get credentials error:', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
-
-  const dbUser = await prisma.user.findUnique({
-    where: { supabaseId: user.id },
-  });
-
-  if (!dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  const credentials = await prisma.ozonCredential.findMany({
-    where: { userId: dbUser.id },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  return NextResponse.json(credentials);
 }
 
-// POST - 创建凭证
-export async function POST(request: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
+// POST - 创建新凭证
+export async function POST(req: NextRequest) {
+  try {
+    const session = await auth();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+    const body = await req.json();
+    const validatedData = createCredentialSchema.parse(body);
 
-  const body = await request.json();
-  const { name, encryptedData } = body;
+    // 加密凭证
+    const encryptedData = encryptCredential({
+      client_id: validatedData.client_id,
+      api_key: validatedData.api_key,
+    });
 
-  const dbUser = await prisma.user.findUnique({
-    where: { supabaseId: user.id },
-  });
-
-  if (!dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  const credential = await prisma.ozonCredential.create({
-    data: {
-      userId: dbUser.id,
-      name,
+    // 保存到数据库
+    const credential = await ozonDb.createCredential({
+      userId: session.user.id,
+      name: validatedData.name,
       encryptedData,
-    },
-  });
+    });
 
-  return NextResponse.json(credential);
+    // 不返回加密数据
+    const { encryptedData: _, ...safeCredential } = credential;
+
+    return NextResponse.json(safeCredential, { status: 201 });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.errors }, { status: 400 });
+    }
+
+    console.error('Create credential error:', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  }
 }
 ```
+
+### 6.2 页面组件示例
+
+**文件**: `src/app/[locale]/(landing)/ozon/download/page.tsx`
 
 ```typescript
-// app/api/ozon/credentials/[id]/route.ts
+'use client';
 
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { useState } from 'react';
+import { useSession } from 'next-auth/react';
+import { useOzonDownload } from '@/app/hooks/use-ozon-download';
+import { Button } from '@/shared/components/ui/button';
+import { Textarea } from '@/shared/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/shared/components/ui/select';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 
-// GET - 获取单个凭证
-export async function GET(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createRouteHandlerClient({ cookies });
+export default function OzonDownloadPage() {
+  const { data: session } = useSession();
+  const { download, isLoading, error, result } = useOzonDownload();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const [credentialId, setCredialId] = useState('');
+  const [articles, setArticles] = useState('');
+  const [field, setField] = useState<'offer_id' | 'sku' | 'vendor_code'>('offer_id');
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // 模拟凭证列表 (实际应从数据库获取)
+  const credentials = [
+    { id: '1', name: '主店铺' },
+    { id: '2', name: '备用店铺' },
+  ];
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const articleList = articles
+      .split('\n')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (articleList.length === 0) {
+      alert('请输入至少一个货号');
+      return;
+    }
+
+    await download({
+      credentialId,
+      articles: articleList,
+      field,
+    });
+  };
+
+  if (!session) {
+    return <div>请先登录</div>;
   }
 
-  const credential = await prisma.ozonCredential.findFirst({
-    where: {
-      id: params.id,
-      userId: user.id, // 确保用户只能获取自己的凭证
-    },
-  });
+  return (
+    <div className="container mx-auto py-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>下载 Ozon 商品图片</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">选择店铺</label>
+              <Select value={credentialId} onValueChange={setCredialId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="选择一个店铺" />
+                </SelectTrigger>
+                <SelectContent>
+                  {credentials.map(cred => (
+                    <SelectItem key={cred.id} value={cred.id}>
+                      {cred.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-  if (!credential) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  }
+            <div>
+              <label className="block text-sm font-medium mb-2">查询字段</label>
+              <Select value={field} onValueChange={(v: any) => setField(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="offer_id">Offer ID (推荐)</SelectItem>
+                  <SelectItem value="sku">SKU</SelectItem>
+                  <SelectItem value="vendor_code">Vendor Code</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-  return NextResponse.json(credential);
-}
+            <div>
+              <label className="block text-sm font-medium mb-2">货号列表</label>
+              <Textarea
+                placeholder="每行输入一个货号&#10;例如：&#10;123456&#10;789012&#10;345678"
+                className="min-h-[200px] font-mono"
+                value={articles}
+                onChange={(e) => setArticles(e.target.value)}
+              />
+              <p className="text-sm text-gray-500 mt-1">
+                支持批量下载，每行一个货号
+              </p>
+            </div>
 
-// PATCH - 更新凭证
-export async function PATCH(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createRouteHandlerClient({ cookies });
+            {error && (
+              <div className="text-sm text-red-600 bg-red-50 p-3 rounded">
+                {error}
+              </div>
+            )}
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+            <Button type="submit" disabled={isLoading || !credentialId}>
+              {isLoading ? '下载中...' : '开始下载'}
+            </Button>
+          </form>
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const body = await request.json();
-  const { name, encryptedData } = body;
-
-  const credential = await prisma.ozonCredential.updateMany({
-    where: {
-      id: params.id,
-      userId: user.id,
-    },
-    data: {
-      ...(name && { name }),
-      ...(encryptedData && { encryptedData }),
-    },
-  });
-
-  if (credential.count === 0) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  }
-
-  return NextResponse.json({ success: true });
-}
-
-// DELETE - 删除凭证
-export async function DELETE(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const credential = await prisma.ozonCredential.deleteMany({
-    where: {
-      id: params.id,
-      userId: user.id,
-    },
-  });
-
-  if (credential.count === 0) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  }
-
-  return NextResponse.json({ success: true });
-}
-```
-
-```typescript
-// app/api/ozon/tasks/route.ts
-
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-
-export async function GET() {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const dbUser = await prisma.user.findUnique({
-    where: { supabaseId: user.id },
-  });
-
-  if (!dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  const tasks = await prisma.ozonTask.findMany({
-    where: { userId: dbUser.id },
-    include: { credential: true },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  return NextResponse.json(tasks);
-}
-
-export async function POST(request: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const body = await request.json();
-
-  const dbUser = await prisma.user.findUnique({
-    where: { supabaseId: user.id },
-  });
-
-  if (!dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
-  }
-
-  const task = await prisma.ozonTask.create({
-    data: {
-      userId: dbUser.id,
-      credentialId: body.credentialId,
-      articles: body.articles,
-      field: body.field,
-      status: body.status || 'pending',
-      progress: body.progress || 0,
-      result: body.result,
-      totalArticles: body.totalArticles,
-      processedArticles: body.processedArticles,
-      totalImages: body.totalImages,
-      successImages: body.successImages,
-      failedImages: body.failedImages,
-      startedAt: body.startedAt ? new Date(body.startedAt) : null,
-      completedAt: body.completedAt ? new Date(body.completedAt) : null,
-    },
-  });
-
-  return NextResponse.json(task);
+          {result && (
+            <div className="mt-8 p-4 bg-green-50 rounded-lg">
+              <h3 className="font-semibold text-green-900 mb-2">下载完成</h3>
+              <div className="text-sm text-green-700 space-y-1">
+                <p>总货号数: {result.total_articles}</p>
+                <p>成功处理: {result.processed}</p>
+                <p>总图片数: {result.total_images}</p>
+                <p>成功下载: {result.success_images}</p>
+                {result.failed_images > 0 && (
+                  <p className="text-red-600">失败: {result.failed_images}</p>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
 ```
-
-### 10.4 创建工具文件
-
-```typescript
-// lib/prisma.ts
-
-import { PrismaClient } from '@prisma/client';
-
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined;
-};
-
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
-```
-
-### 10.5 测试流程
-
-```bash
-# 1. 启动开发服务器
-npm run dev
-
-# 2. 注册并登录
-# 访问 http://localhost:3000/login
-
-# 3. 添加 Ozon 凭证
-# 访问 http://localhost:3000/dashboard/ozon/credentials
-
-# 4. 创建下载任务
-# 访问 http://localhost:3000/dashboard/ozon/download
-
-# 5. 查看任务列表
-# 访问 http://localhost:3000/dashboard/ozon/tasks
-```
-
-### 10.6 验证清单
-
-- [ ] 用户可以注册和登录
-- [ ] 登录后可以访问 Dashboard
-- [ ] 可以添加 Ozon 凭证（加密存储）
-- [ ] 可以编辑和删除凭证
-- [ ] 可以创建下载任务
-- [ ] 下载任务正常工作（调用后端 API）
-- [ ] 任务结果正确保存到数据库
-- [ ] 可以查看任务历史记录
-- [ ] 用户只能访问自己的数据
-- [ ] 未登录用户无法访问 Dashboard
 
 ---
 
-## 总结
+## 7. 安全最佳实践
 
-这个完整的集成指南涵盖了：
+### 7.1 凭证安全
 
-1. ✅ Next.js 14 + Supabase 技术栈
-2. ✅ 完整的数据库设计（Prisma）
-3. ✅ 用户认证流程（Supabase Auth）
-4. ✅ Dashboard 页面布局
-5. ✅ Ozon 凭证管理（CRUD）
-6. ✅ 下载任务创建和管理
-7. ✅ 加密存储敏感数据
-8. ✅ 后端 API 集成
-9. ✅ 完整的组件和 Hooks
-10. ✅ 逐步集成指南
+| 措施 | 实现 | 重要性 |
+|------|------|--------|
+| **加密存储** | 使用 AES 加密 `client_id` 和 `api_key` | ⭐⭐⭐⭐⭐ |
+| **环境变量隔离** | 加密密钥存储在服务器环境变量，不暴露给前端 | ⭐⭐⭐⭐⭐ |
+| **HTTPS 强制** | 生产环境强制使用 HTTPS | ⭐⭐⭐⭐⭐ |
+| **不记录日志** | 后端不记录敏感凭证信息 | ⭐⭐⭐⭐ |
+| **API Key 保护** | 后端 X-API-Key 使用强随机密钥 | ⭐⭐⭐⭐ |
 
-按照这个文档，前端开发者可以一次性完成整个功能的集成。
+### 7.2 数据隔离
+
+```
+R2 存储路径隔离:
+{bucket}/
+└── users/
+    └── {user_id}/           # 按用户隔离
+        └── ozon/
+            └── {article}/    # 按货号分组
+                ├── {article}_1.jpg
+                └── {article}_2.jpg
+```
+
+### 7.3 权限控制
+
+- ✅ 用户只能访问自己的凭证 (数据库级别隔离)
+- ✅ 用户只能查看自己的任务 (数据库级别隔离)
+- ✅ 凭证删除时级联删除相关任务
+- ✅ 前端 API 路由验证用户身份
+
+### 7.4 错误处理
+
+```typescript
+// 不暴露敏感错误信息给用户
+try {
+  const result = await ozonApi.downloadImages(request);
+} catch (error) {
+  // 生产环境记录详细错误到日志
+  console.error('Download failed:', error);
+
+  // 用户只看到友好提示
+  showToast('下载失败，请稍后重试');
+}
+```
+
+---
+
+## 8. 常见问题
+
+### Q1: 后端 API 返回 401 Unauthorized
+
+**原因**: API Key 不匹配
+
+**解决方案**:
+1. 检查前端 `.env` 中的 `PYTHON_API_KEY`
+2. 检查后端 `.env` 中的 `PYTHON_SERVICE_API_KEY`
+3. 确保两者完全一致
+
+### Q2: 下载返回 "Invalid Ozon credentials"
+
+**原因**: Ozon API 凭证无效或过期
+
+**解决方案**:
+1. 验证用户输入的 `client_id` 和 `api_key` 是否正确
+2. 检查 Ozon Seller API 权限是否启用
+3. 提示用户重新配置凭证
+
+### Q3: 图片上传到 R2 失败
+
+**原因**: R2 配置错误或网络问题
+
+**解决方案**:
+1. 检查后端 R2 环境变量配置
+2. 验证 R2 Bucket 是否存在
+3. 检查网络连接和超时设置
+
+### Q4: 前端无法连接到后端
+
+**原因**: 跨域问题或端口不正确
+
+**解决方案**:
+1. 确认后端服务正在运行 (`http://localhost:8000`)
+2. 检查 CORS 配置 (后端 FastAPI 需要配置 CORS)
+3. 使用健康检查 API 测试连接
+
+### Q5: 凭证解密失败
+
+**原因**: 加密密钥不一致
+
+**解决方案**:
+1. 确保前端和服务器使用相同的 `CREDENTIAL_ENCRYPTION_KEY`
+2. 检查环境变量是否正确加载
+3. 重新加密存储凭证
+
+---
+
+## 9. 部署清单
+
+### 9.1 前端部署 (Vercel/Netlify)
+
+- [ ] 设置环境变量 (`.env` 所有配置)
+- [ ] 配置数据库连接 (PostgreSQL)
+- [ ] 执行数据库迁移
+- [ ] 验证认证系统工作正常
+
+### 9.2 后端部署 (Docker)
+
+- [ ] 构建 Docker 镜像
+- [ ] 设置环境变量 (R2 配置、API Key)
+- [ ] 配置 CORS 允许前端域名
+- [ ] 健康检查测试
+
+### 9.3 R2 配置
+
+- [ ] 创建 Bucket
+- [ ] 配置公共访问 (如果需要)
+- [ ] 设置自定义域名 (可选)
+- [ ] 配置 CORS 规则
+
+---
+
+## 10. 总结
+
+这个架构的核心优势：
+
+✅ **职责明确**: 前端管数据，后端干重活
+✅ **无状态后端**: 易于扩展和部署
+✅ **数据安全**: 凭证加密存储，R2 路径隔离
+✅ **开发效率**: 前端使用成熟框架 (ShipAny)
+✅ **性能优化**: 并发下载、流式上传、不写磁盘
+
+按照本文档，前端开发者可以快速集成 Ozon 图片下载功能，无需深入了解 Python 后端实现细节。
+
+---
+
+**文档版本**: 2.0.0
+**最后更新**: 2026-01-19
+**适用架构**: Next.js (ShipAny) + Python FastAPI (无状态)

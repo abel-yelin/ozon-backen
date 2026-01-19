@@ -2,14 +2,13 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from app.plugins.base import BasePlugin, ProcessingMode
 from app.plugins.ozon.client import OzonClient
 from app.plugins.ozon.downloader import download_and_upload_to_r2, generate_r2_path
 from app.services.storage import R2StorageService
-from app.core.encryption import encryption
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +229,7 @@ class OzonDownloadPlugin(BasePlugin):
                 return ext
         return "jpg"  # Default
 
-    def validate_input(self, input_data: dict) -> tuple[bool, str | None]:
+    def validate_input(self, input_data: dict) -> Tuple[bool, Optional[str]]:
         """
         Validate input data.
 

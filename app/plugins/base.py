@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Optional, Tuple
 
 
 class ProcessingMode(str, Enum):
@@ -54,7 +55,7 @@ class BasePlugin(ABC):
         pass
 
     @abstractmethod
-    def validate_input(self, input_data: dict) -> tuple[bool, str | None]:
+    def validate_input(self, input_data: dict) -> Tuple[bool, Optional[str]]:
         """Input validation
 
         Returns:

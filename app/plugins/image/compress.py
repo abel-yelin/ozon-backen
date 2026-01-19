@@ -1,6 +1,6 @@
 """Image compression plugin - Phase 1 first plugin"""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 from app.plugins.base import BasePlugin, ProcessingMode
 from PIL import Image
 import io
@@ -90,7 +90,7 @@ class ImageCompressPlugin(BasePlugin):
             }
         }
 
-    def validate_input(self, input_data: Dict[str, Any]) -> tuple[bool, str | None]:
+    def validate_input(self, input_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Input validation"""
         if "image_url" not in input_data:
             return False, "Missing required parameter: image_url"

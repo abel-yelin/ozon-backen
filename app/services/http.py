@@ -1,5 +1,6 @@
 """HTTP client connection pool management"""
 
+from typing import Optional
 import aiohttp
 from aiohttp import ClientSession
 
@@ -7,7 +8,7 @@ from aiohttp import ClientSession
 class HttpClient:
     """HTTP client connection pool manager"""
 
-    _session: ClientSession | None = None
+    _session: Optional[ClientSession] = None
 
     @classmethod
     async def get_session(cls) -> ClientSession:
