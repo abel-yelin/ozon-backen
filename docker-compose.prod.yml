@@ -1,0 +1,94 @@
+# Production docker-compose.yml for Dokploy
+# Optimized for production deployment
+
+version: '3.8'
+
+services:
+  python-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: python-capability-service:latest
+    container_name: python-capability-service
+    ports:
+      - "8000:8000"
+    environment:
+      # R2 Configuration (from Dokploy environment)
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+
+      # Service Auth
+      - PYTHON_SERVICE_API_KEY=${PYTHON_SERVICE_API_KEY}
+
+      # Optional Configuration
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WORKERS_COUNT=${WORKERS_COUNT:-4}
+
+      # Phase 2: Redis (optional)
+      # - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+
+    restart: always
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits (adjust based on your server)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem (optional, for enhanced security)
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+
+  # Redis Cache (Phase 2 - uncomment when needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: python-service-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: always
+  #   command: redis-server --appendonly yes
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+
+# Uncomment for Phase 2
+# volumes:
+#   redis_data:
+#     driver: local
+
+# Network configuration
+networks:
+  default:
+    name: python-service-network

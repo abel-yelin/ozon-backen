@@ -1,0 +1,39 @@
+# dev/back-end/docker-compose.yml
+version: '3.8'
+
+services:
+  python-service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # R2 Configuration
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+
+      # Service Auth
+      - PYTHON_SERVICE_API_KEY=${PYTHON_SERVICE_API_KEY:-dev-secret-key}
+
+      # Optional: Redis (for Phase 2)
+      # - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis (uncomment for Phase 2)
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+
+# volumes:
+#   redis_data:

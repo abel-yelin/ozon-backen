@@ -1,0 +1,6 @@
+# Plugin configuration
+plugins:
+  image-compress:
+    enabled: true
+    max_file_size: 52428800  # 50MB
+    supported_formats: ["jpg", "jpeg", "png", "webp"]
