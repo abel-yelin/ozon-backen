@@ -102,10 +102,9 @@ class OzonDownloadPlugin(BasePlugin):
                 result["items"].append(item_result)
                 result["processed"] += 1
 
-                if item_result.get("status") == "success":
-                    result["total_images"] += item_result["images"]["total"]
-                    result["success_images"] += item_result["images"]["success"]
-                    result["failed_images"] += item_result["images"]["failed"]
+                result["total_images"] += item_result["total_images"]
+                result["success_images"] += item_result["success_images"]
+                result["failed_images"] += item_result["failed_images"]
 
         finally:
             await client.close()
@@ -128,13 +127,11 @@ class OzonDownloadPlugin(BasePlugin):
                 "article": str,
                 "product_id": Optional[int],
                 "status": "success" | "failed",
-                "images": {
-                    "total": int,
-                    "success": int,
-                    "failed": int,
-                    "urls": List[str]
-                },
-                "error_message": Optional[str]
+                "total_images": int,
+                "success_images": int,
+                "failed_images": int,
+                "urls": List[str],
+                "error": Optional[str]
             }
         """
         logger.info(f"Processing article={article} field={field}")
@@ -147,8 +144,11 @@ class OzonDownloadPlugin(BasePlugin):
             return {
                 "article": article,
                 "status": "failed",
-                "error_message": "PRODUCT_NOT_FOUND",
-                "images": {"total": 0, "success": 0, "failed": 0, "urls": []}
+                "error": "PRODUCT_NOT_FOUND",
+                "total_images": 0,
+                "success_images": 0,
+                "failed_images": 0,
+                "urls": []
             }
 
         logger.info(f"Found product_id={product_id} for article={article}")
@@ -162,8 +162,11 @@ class OzonDownloadPlugin(BasePlugin):
                 "article": article,
                 "product_id": product_id,
                 "status": "failed",
-                "error_message": "NO_IMAGES",
-                "images": {"total": 0, "success": 0, "failed": 0, "urls": []}
+                "error": "NO_IMAGES",
+                "total_images": 0,
+                "success_images": 0,
+                "failed_images": 0,
+                "urls": []
             }
 
         logger.info(f"Found {len(image_urls)} images for article={article}")
@@ -214,11 +217,19 @@ class OzonDownloadPlugin(BasePlugin):
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
+        status = "success" if stats["success"] > 0 else "failed"
+        error = None
+        if status == "failed":
+            error = "DOWNLOAD_FAILED"
         return {
             "article": article,
             "product_id": product_id,
-            "status": "success" if stats["success"] > 0 else "failed",
-            "images": stats
+            "status": status,
+            "total_images": stats["total"],
+            "success_images": stats["success"],
+            "failed_images": stats["failed"],
+            "urls": stats["urls"],
+            "error": error
         }
 
     def _get_extension_from_url(self, url: str) -> str:

@@ -126,9 +126,11 @@ async def download_ozon_images(
             "r2_service": r2_service
         })
 
+        success = bool(result.get("success_images"))
         return DownloadResponse(
-            success=True,
-            data=result
+            success=success,
+            data=result,
+            error=None if success else "NO_IMAGES_DOWNLOADED"
         )
 
     except Exception as e:

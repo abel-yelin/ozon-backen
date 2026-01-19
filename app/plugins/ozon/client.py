@@ -5,6 +5,7 @@ import logging
 from typing import Optional, List
 import aiohttp
 from aiohttp import ClientTimeout
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,24 @@ class OzonClient:
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.post(url, json=payload, headers=headers) as response:
                 data = await response.json()
+                if response.status != 200:
+                    logger.warning(
+                        "Ozon API non-200 response %s %s: %s",
+                        response.status,
+                        path,
+                        data
+                    )
+                if os.environ.get("OZON_DEBUG") == "1":
+                    logger.debug("Ozon API response %s: %s", path, data)
                 return data
+
+    def _value_matches(self, value: object, target: str) -> bool:
+        """Match target string against scalar or list values."""
+        if value is None:
+            return False
+        if isinstance(value, list):
+            return any(str(v) == target for v in value)
+        return str(value) == target
 
     async def find_product_id(
         self,
@@ -72,35 +90,55 @@ class OzonClient:
         """
         try:
             if field == "offer_id":
-                payload = {
-                    "filter": {
-                        "offer_id": [article],
-                        "product_id": [],
-                        "visibility": "ALL"
-                    },
-                    "last_id": "",
-                    "limit": 100
+                filter_payload = {
+                    "offer_id": [article],
+                    "product_id": [],
+                    "visibility": "ALL"
                 }
             else:
-                payload = {
-                    "page": 1,
-                    "page_size": 100,
-                    "filter": {field: article}
+                filter_payload = {
+                    field: [article],
+                    "product_id": [],
+                    "visibility": "ALL"
                 }
 
+            payload = {
+                "filter": filter_payload,
+                "last_id": "",
+                "limit": 100
+            }
+
             response = await self._post("/v3/product/list", payload)
+            if response.get("error") or response.get("errors"):
+                logger.warning(
+                    "Ozon API error on product list for article=%s field=%s: %s",
+                    article,
+                    field,
+                    response.get("error") or response.get("errors")
+                )
+                return None
             items = response.get("result", {}).get("items", [])
+            total = response.get("result", {}).get("total")
+            target = str(article)
 
             for item in items:
                 product_id = item.get("product_id")
                 field_value = item.get(field) or item.get("offer_id")
 
-                if str(field_value) == str(article):
+                if self._value_matches(field_value, target):
                     if product_id:
                         try:
                             return int(product_id)
                         except (ValueError, TypeError):
                             return int(str(product_id))
+
+            if items and total == 1:
+                product_id = items[0].get("product_id")
+                if product_id:
+                    try:
+                        return int(product_id)
+                    except (ValueError, TypeError):
+                        return int(str(product_id))
 
             logger.warning(f"Product not found for article={article} field={field}")
             return None
@@ -124,29 +162,61 @@ class OzonClient:
             response = await self._post("/v2/product/pictures/info", payload)
 
             urls = []
+            if response.get("error") or response.get("errors"):
+                logger.warning(
+                    "Ozon API error on pictures info for product_id=%s: %s",
+                    product_id,
+                    response.get("error") or response.get("errors")
+                )
+                return []
+
+            def add_url(value: object) -> None:
+                if not value:
+                    return
+                if isinstance(value, str):
+                    s = value.strip()
+                    if s.startswith("http://") or s.startswith("https://"):
+                        urls.append(s)
+                    return
+                if isinstance(value, list):
+                    for item in value:
+                        add_url(item)
+
+            def extract_images(images_list: object) -> None:
+                if not images_list:
+                    return
+                if isinstance(images_list, dict):
+                    images_list = [images_list]
+                if isinstance(images_list, list):
+                    for img in images_list:
+                        if isinstance(img, dict):
+                            add_url(
+                                img.get("url")
+                                or img.get("image_url")
+                                or img.get("link")
+                                or img.get("origin_url")
+                                or img.get("preview_url")
+                            )
+                        else:
+                            add_url(img)
+
             # Check multiple possible response structures
             images = (
-                response.get("result", {}).get("images", []) or
-                response.get("images", [])
+                response.get("result", {}).get("images", [])
+                or response.get("images", [])
             )
-
-            for img in images:
-                url = (
-                    img.get("url") or
-                    img.get("image_url") or
-                    img.get("link")
-                )
-                if url:
-                    urls.append(str(url).strip())
+            extract_images(images)
 
             # Also check items structure
-            items = response.get("result", {}).get("items", [])
+            items = response.get("result", {}).get("items", []) or response.get("items", [])
+            if isinstance(items, dict):
+                items = [items]
             for item in items:
-                for key in ("primary_photo", "photo", "color_photo", "photo_360"):
-                    arr = item.get(key) or []
-                    for url in arr:
-                        if url:
-                            urls.append(str(url).strip())
+                if not isinstance(item, dict):
+                    continue
+                extract_images(item.get("images") or item.get("pictures"))
+                for key in ("primary_image", "primary_photo", "photo", "color_photo", "photo_360"):
+                    add_url(item.get(key))
 
             # Remove duplicates while preserving order
             seen = set()
