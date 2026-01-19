@@ -10,12 +10,14 @@ This is a stateless Python capability service that provides image processing, vi
 - 🔒 **Stateless**: No business data storage
 - 🔌 **Plugin-based**: All capabilities are plugins
 - 🚀 **Async-first**: Built on FastAPI with async/await
+- 💪 **Backend Heavy Lifting**: Backend only handles compute/IO-intensive tasks
 - 🎯 **Simple**: YAGNI principle - only what's needed
 
 ## Phase 1 Features
 
 ✅ FastAPI application with plugin architecture
 ✅ Image compression plugin (sync processing)
+✅ **Ozon download plugin** (batch image download from Ozon marketplace)
 ✅ R2 storage integration (Cloudflare)
 ✅ API key authentication
 ✅ Health check endpoint
@@ -31,7 +33,8 @@ dev/back-end/
 │   │   ├── deps.py             # Authentication
 │   │   └── v1/
 │   │       ├── health.py       # Health check
-│   │       └── image.py        # Image compression API
+│   │       ├── image.py        # Image compression API
+│   │       └── ozon.py         # Ozon download API
 │   ├── core/                   # Core infrastructure
 │   │   ├── config.py           # Configuration
 │   │   ├── logger.py           # Logging
@@ -39,14 +42,19 @@ dev/back-end/
 │   ├── plugins/                # Plugin system
 │   │   ├── base.py             # BasePlugin class
 │   │   ├── plugin_manager.py   # Plugin manager
-│   │   └── image/
-│   │       └── compress.py     # Image compression plugin
+│   │   ├── image/
+│   │   │   └── compress.py     # Image compression plugin
+│   │   └── ozon/               # Ozon download plugin
+│   │       ├── download.py     # Main plugin
+│   │       ├── client.py       # Ozon API client
+│   │       └── downloader.py   # Image downloader
 │   ├── services/               # External services
-│   │   ├── storage.py          # R2 storage
-│   │   └── http.py             # HTTP client pool
+│   │   └── storage.py          # R2 storage
 │   └── main.py                 # FastAPI app entry
 ├── config/
 │   └── plugins.yaml            # Plugin configuration
+├── docs/                       # Documentation
+│   └── OZON_DOWNLOAD_INTEGRATION.md  # Ozon feature docs
 ├── tests/                      # Tests
 │   ├── conftest.py
 │   └── test_compress.py
@@ -158,6 +166,57 @@ Response:
 }
 ```
 
+### Ozon Image Download
+
+The Ozon download plugin allows batch downloading product images from the Ozon marketplace. Images are uploaded directly to R2 (no local storage). **Backend handles the heavy lifting; frontend manages data.**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/ozon/download" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: dev-secret-key" \
+  -d '{
+    "credential": {
+      "client_id": "your_client_id",
+      "api_key": "your_api_key"
+    },
+    "articles": ["123456", "789012"],
+    "field": "offer_id",
+    "user_id": "user_123"
+  }'
+```
+
+Response (direct result, no async task):
+```json
+{
+  "success": true,
+  "data": {
+    "total_articles": 2,
+    "processed": 2,
+    "total_images": 16,
+    "success_images": 15,
+    "failed_images": 1,
+    "items": [
+      {
+        "article": "123456",
+        "product_id": 123456789,
+        "status": "success",
+        "total_images": 8,
+        "success_images": 8,
+        "failed_images": 0,
+        "urls": [
+          "https://r2.example.com/users/user_123/ozon/123456/123456_1.jpg",
+          "https://r2.example.com/users/user_123/ozon/123456/123456_2.jpg"
+        ]
+      }
+    ]
+  }
+}
+```
+
+**📖 For complete Ozon documentation, see [docs/OZON_DOWNLOAD_INTEGRATION.md](docs/OZON_DOWNLOAD_INTEGRATION.md)**
+
+**🚀 For Next.js frontend integration, see [docs/FRONTEND_INTEGRATION_GUIDE.md](docs/FRONTEND_INTEGRATION_GUIDE.md)**
+
 ## Plugin System
 
 ### Creating a New Plugin
@@ -220,14 +279,23 @@ plugins:
     enabled: true
     max_file_size: 52428800  # 50MB
     supported_formats: ["jpg", "jpeg", "png", "webp"]
+
+  ozon-download:
+    enabled: true
+    max_workers: 5          # Maximum concurrent downloads
+    timeout_sec: 20         # HTTP request timeout
+    default_field: offer_id # Default search field (offer_id/sku/vendor_code)
+    supported_fields:
+      - offer_id
+      - sku
+      - vendor_code
 ```
 
 ## Testing
 
-Run tests:
+Run all tests:
 
 ```bash
-cd dev/back-end
 pytest
 ```
 
@@ -295,6 +363,29 @@ MIT
 
 ---
 
-**Version**: 2.0.0 (Phase 1)
-**Status**: Foundation Complete
-**Last Updated**: 2026-01-17
+**Version**: 2.1.0 (Phase 1 + Ozon Download)
+**Status**: Foundation Complete + Ozon Plugin (Stateless)
+**Last Updated**: 2026-01-19
+
+## Architecture Principles
+
+**Backend Only Handles Heavy Lifting:**
+- ✅ Ozon API calls
+- ✅ Image downloading
+- ✅ R2 file uploads
+- ✅ Compute-intensive operations
+
+**Frontend Manages Data:**
+- ✅ User authentication
+- ✅ Credential storage
+- ✅ Task management
+- ✅ Business logic
+
+## Changelog
+
+### v2.1.0 (2026-01-19)
+- ✅ Added Ozon download plugin
+- ✅ Stateless design (no database)
+- ✅ R2 direct upload
+- ✅ Simplified API (single endpoint)
+- ✅ Complete documentation for frontend integration

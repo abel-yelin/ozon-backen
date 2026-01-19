@@ -4,3 +4,13 @@ plugins:
     enabled: true
     max_file_size: 52428800  # 50MB
     supported_formats: ["jpg", "jpeg", "png", "webp"]
+
+  ozon-download:
+    enabled: true
+    max_workers: 5          # Maximum concurrent downloads
+    timeout_sec: 20         # HTTP request timeout
+    default_field: offer_id # Default search field (offer_id/sku/vendor_code)
+    supported_fields:
+      - offer_id
+      - sku
+      - vendor_code

@@ -2,9 +2,10 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import health, image
+from app.api.v1 import health, image, ozon
 from app.plugins.plugin_manager import plugin_manager
 from app.plugins.image.compress import ImageCompressPlugin
+from app.plugins.ozon.download import OzonDownloadPlugin
 from app.core.config import settings
 from app.core.logger import setup_logging
 
@@ -14,8 +15,8 @@ setup_logging()
 # Create FastAPI app
 app = FastAPI(
     title="Python Capability Service",
-    version="2.0.0",
-    description="Stateless processing capabilities for image2url"
+    version="2.1.0",
+    description="Stateless processing capabilities - backend only handles heavy lifting"
 )
 
 # CORS middleware
@@ -30,21 +31,23 @@ app.add_middleware(
 compress_plugin = ImageCompressPlugin(config=settings.plugins_config)
 plugin_manager.register(compress_plugin)
 
+ozon_download_plugin = OzonDownloadPlugin(config=settings.plugins_config.get("ozon-download", {}))
+plugin_manager.register(ozon_download_plugin)
+
 # Include routers
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(image.router, prefix="/api/v1/image", tags=["image"])
+app.include_router(ozon.router, prefix="/api/v1", tags=["ozon"])
 
 
 # Startup/Shutdown events
 @app.on_event("startup")
 async def startup():
     """Initialize on application startup"""
-    # Initialize HTTP client pool, etc.
     pass
 
 
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup on application shutdown"""
-    # Cleanup resources
     pass
