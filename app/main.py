@@ -19,10 +19,11 @@ app = FastAPI(
     description="Stateless processing capabilities - backend only handles heavy lifting"
 )
 
-# CORS middleware
+# CORS middleware - use environment-specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Configure in production
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

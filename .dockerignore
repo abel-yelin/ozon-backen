@@ -24,14 +24,7 @@ wheels/
 venv/
 env/
 ENV/
-
-# Environment
-.env
-.env.local
-.env.production
-*.env
-!.env.example
-!.env.production.example
+.venv
 
 # IDE
 .vscode/
@@ -40,15 +33,35 @@ ENV/
 *.swo
 *~
 
-# Testing
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
 .pytest_cache/
 .coverage
-htmlcov/
+
+# Demo
+demo/
+
+# Logs
+*.log
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project folders
-demo/
-demo2/
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

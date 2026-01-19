@@ -389,3 +389,7 @@ MIT
 - ✅ R2 direct upload
 - ✅ Simplified API (single endpoint)
 - ✅ Complete documentation for frontend integration
+
+## Dokploy Deployment
+
+For production deployment on Dokploy, see [DOKPLOY_DEPLOYMENT.md](DOKPLOY_DEPLOYMENT.md) for detailed instructions.
