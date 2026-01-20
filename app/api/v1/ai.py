@@ -9,12 +9,14 @@ This module provides REST API endpoints for AI Playground operations:
 - SSE streaming for real-time progress
 """
 
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List, Dict, Any
 from app.plugins.plugin_manager import plugin_manager
 from app.api.deps import verify_api_key
+from app.services.storage import R2Service
+import html
 import time
 import asyncio
 import json
@@ -95,6 +97,18 @@ class AiDownloadResponse(BaseModel):
     download_url: str
     expires_at: str
 
+
+class AiUploadItem(BaseModel):
+    url: str
+    filename: str
+    content_type: Optional[str] = None
+    size: int
+
+
+class AiUploadResponse(BaseModel):
+    success: bool
+    data: Optional[List[AiUploadItem]] = None
+    error: Optional[str] = None
 
 # ============================================================================
 # API Endpoints
@@ -289,6 +303,156 @@ async def get_ai_job_result(
     return AiJobResult(**result)
 
 
+@router.get("/job/{job_id}/compare", response_class=HTMLResponse)
+async def view_ai_job_compare(
+    job_id: str,
+    authorized: bool = Depends(verify_api_key)
+):
+    """Render a simple side-by-side comparison page for an AI job"""
+    plugin = plugin_manager.get("ai-playground")
+
+    if not plugin:
+        raise HTTPException(status_code=501, detail="AI Playground plugin not found")
+
+    result = plugin.get_job_result(job_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if result["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Job is not completed yet")
+
+    pairs = []
+    metadata = result.get("metadata") or []
+    if metadata:
+        for item in metadata:
+            pairs.append((item.get("source_url"), item.get("result_url")))
+    else:
+        source_urls = result.get("source_image_urls") or []
+        result_urls = result.get("result_image_urls") or []
+        max_len = max(len(source_urls), len(result_urls))
+        for idx in range(max_len):
+            source_url = source_urls[idx] if idx < len(source_urls) else None
+            result_url = result_urls[idx] if idx < len(result_urls) else None
+            pairs.append((source_url, result_url))
+
+    safe_job_id = html.escape(str(job_id))
+    rows = []
+    for index, (source_url, result_url) in enumerate(pairs, start=1):
+        left_img = (
+            f'<a href="{html.escape(source_url)}" target="_blank" rel="noopener">'
+            f'<img src="{html.escape(source_url)}" alt="source {index}"></a>'
+            if source_url else '<div class="placeholder">missing source</div>'
+        )
+        right_img = (
+            f'<a href="{html.escape(result_url)}" target="_blank" rel="noopener">'
+            f'<img src="{html.escape(result_url)}" alt="result {index}"></a>'
+            if result_url else '<div class="placeholder">missing result</div>'
+        )
+        rows.append(
+            "<div class=\"pair\">"
+            f"<div class=\"cell\"><div class=\"label\">source {index}</div>{left_img}</div>"
+            f"<div class=\"cell\"><div class=\"label\">result {index}</div>{right_img}</div>"
+            "</div>"
+        )
+
+    body = "\n".join(rows) if rows else '<div class="empty">no images</div>'
+    html_page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Compare {safe_job_id}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f6f3ef;
+      --panel: #ffffff;
+      --ink: #1a1a1a;
+      --muted: #6f6f6f;
+      --border: #e3ded8;
+    }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }}
+    header {{
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      position: sticky;
+      top: 0;
+    }}
+    .wrap {{
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 18px 24px 40px;
+    }}
+    .pair {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }}
+    .cell {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      min-height: 240px;
+      display: flex;
+      flex-direction: column;
+    }}
+    .label {{
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }}
+    img {{
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      object-fit: contain;
+      background: #f0ede8;
+    }}
+    .placeholder {{
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      background: #f0ede8;
+      border-radius: 8px;
+      font-size: 14px;
+    }}
+    .empty {{
+      color: var(--muted);
+      text-align: center;
+      padding: 40px 0;
+    }}
+    @media (max-width: 900px) {{
+      .pair {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>AI Compare</strong> - job {safe_job_id}
+  </header>
+  <div class="wrap">
+    {body}
+  </div>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html_page)
+
+
 @router.post("/download", response_model=AiDownloadResponse)
 async def create_ai_download(
     request: AiDownloadRequest,
@@ -302,3 +466,34 @@ async def create_ai_download(
     expires_at = (datetime.utcnow() + timedelta(hours=1)).isoformat() + "Z"
 
     return AiDownloadResponse(download_url=download_url, expires_at=expires_at)
+
+
+@router.post("/upload", response_model=AiUploadResponse)
+async def upload_ai_images(
+    files: List[UploadFile] = File(...),
+    authorized: bool = Depends(verify_api_key)
+):
+    """Upload images to R2 and return public URLs"""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    r2 = R2Service()
+    results: List[Dict[str, Any]] = []
+
+    for upload in files:
+        content = await upload.read()
+        if not content:
+            return AiUploadResponse(success=False, error="Empty file content")
+
+        filename = upload.filename or "upload.bin"
+        content_type = upload.content_type or "application/octet-stream"
+        url = await r2.upload(data=content, filename=filename, content_type=content_type)
+
+        results.append({
+            "url": url,
+            "filename": filename,
+            "content_type": content_type,
+            "size": len(content),
+        })
+
+    return AiUploadResponse(success=True, data=results)

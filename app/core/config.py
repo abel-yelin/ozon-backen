@@ -8,8 +8,39 @@ from pydantic import model_validator
 from typing import Dict, Any, List
 
 
+_ENV_FILES = (".env", ".env.local")
+
+
+def _load_env_defaults() -> None:
+    env_values: Dict[str, str] = {}
+    for filename in _ENV_FILES:
+        path = Path(filename)
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("export "):
+                line = line[7:].lstrip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (value.startswith("\"") and value.endswith("\"")) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            env_values[key] = value
+
+    for key, value in env_values.items():
+        os.environ.setdefault(key, value)
+
+
 def _load_plugins_config() -> Dict[str, Any]:
     """Load plugins configuration from YAML file with environment variable substitution"""
+    _load_env_defaults()
     config_path = Path("config/plugins.yaml")
     if not config_path.exists():
         return {}

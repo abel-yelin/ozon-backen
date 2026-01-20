@@ -291,7 +291,7 @@ class AiImageProcessor:
             "contents": [
                 {
                     "parts": [
-                        {"inline_data": {"mime_type": "image/png", "data": base64_image}},
+                        {"inlineData": {"mimeType": "image/png", "data": base64_image}},
                         {"text": prompt}
                     ]
                 }
@@ -327,11 +327,20 @@ class AiImageProcessor:
         content = candidates[0].get("content", {})
         parts = content.get("parts", [])
 
+        def _extract_inline_data(part: Any) -> Optional[str]:
+            if not isinstance(part, dict):
+                return None
+            inline_data = part.get("inlineData") or part.get("inline_data")
+            if isinstance(inline_data, dict):
+                data_value = inline_data.get("data")
+                if data_value:
+                    return data_value
+            return None
+
         # Look for inline data (image)
         for part in parts:
-            inline_data = part.get("inlineData")
-            if inline_data:
-                result_base64 = inline_data.get("data", "")
+            result_base64 = _extract_inline_data(part)
+            if result_base64:
                 result_bytes = base64.b64decode(result_base64)
                 return Image.open(io.BytesIO(result_bytes))
 
