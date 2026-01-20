@@ -14,3 +14,12 @@ plugins:
       - offer_id
       - sku
       - vendor_code
+
+  ai:
+    enabled: true
+    api_base: "https://llmxapi.com/v1beta"
+    api_key: "${AI_API_KEY}"
+    model: "models/gemini-2.5-flash-image-preview"
+    target_width: 1500
+    target_height: 2000
+    default_temperature: 0.5

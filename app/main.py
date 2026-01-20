@@ -2,10 +2,11 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import health, image, ozon
+from app.api.v1 import health, image, ozon, ai
 from app.plugins.plugin_manager import plugin_manager
 from app.plugins.image.compress import ImageCompressPlugin
 from app.plugins.ozon.download import OzonDownloadPlugin
+from app.plugins.ai.playground import AiPlaygroundPlugin
 from app.core.config import settings
 from app.core.logger import setup_logging
 
@@ -35,10 +36,23 @@ plugin_manager.register(compress_plugin)
 ozon_download_plugin = OzonDownloadPlugin(config=settings.plugins_config.get("ozon-download", {}))
 plugin_manager.register(ozon_download_plugin)
 
+# Register AI Playground plugin
+ai_playground_config = {
+    "api_base": settings.plugins_config.get("ai", {}).get("api_base", ""),
+    "api_key": settings.plugins_config.get("ai", {}).get("api_key", ""),
+    "model": settings.plugins_config.get("ai", {}).get("model", ""),
+    "target_width": settings.plugins_config.get("ai", {}).get("target_width", 1500),
+    "target_height": settings.plugins_config.get("ai", {}).get("target_height", 2000),
+    "default_temperature": settings.plugins_config.get("ai", {}).get("default_temperature", 0.5),
+}
+ai_playground_plugin = AiPlaygroundPlugin(config=ai_playground_config)
+plugin_manager.register(ai_playground_plugin)
+
 # Include routers
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(image.router, prefix="/api/v1/image", tags=["image"])
 app.include_router(ozon.router, prefix="/api/v1", tags=["ozon"])
+app.include_router(ai.router, prefix="/api/v1/ai", tags=["ai"])
 
 
 # Startup/Shutdown events
