@@ -5,7 +5,7 @@ This module provides REST API endpoints for AI Playground operations:
 - Get job status
 - Get job results
 - Cancel jobs
-- Health check
+- Download URLs
 - SSE streaming for real-time progress
 """
 
@@ -19,6 +19,7 @@ import time
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,6 +83,17 @@ class AiJobResult(BaseModel):
     source_image_urls: List[str]
     processing_time_ms: int
     metadata: List[Dict[str, Any]]
+
+
+class AiDownloadRequest(BaseModel):
+    image_pair_id: str
+    source_url: Optional[str] = None
+    result_url: Optional[str] = None
+
+
+class AiDownloadResponse(BaseModel):
+    download_url: str
+    expires_at: str
 
 
 # ============================================================================
@@ -193,10 +205,6 @@ async def cancel_ai_job(
     return {"success": True, "message": "Job cancelled"}
 
 
-# Note: SSE streaming endpoint will be added in a separate task
-# For now, job status is polled via GET /job/{job_id}/status
-
-
 @router.get("/job/{job_id}/stream")
 async def stream_ai_job_progress(
     job_id: str,
@@ -223,13 +231,24 @@ async def stream_ai_job_progress(
             status = plugin.get_job_status(job_id)
 
             if not status:
-                yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
+                yield f"event: failed\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
                 break
 
             # Only send if status changed
             if status != last_status:
-                event_type = "progress" if status["status"] == "processing" else status["status"]
-                yield f"event: {event_type}\ndata: {json.dumps(status)}\n\n"
+                if status["status"] == "processing":
+                    yield f"event: progress\ndata: {json.dumps(status)}\n\n"
+                elif status["status"] == "completed":
+                    result = plugin.get_job_result(job_id)
+                    if result:
+                        yield f"event: completed\ndata: {json.dumps(result)}\n\n"
+                    else:
+                        yield f"event: failed\ndata: {json.dumps({'error': 'Job result unavailable'})}\n\n"
+                elif status["status"] in ("failed", "cancelled"):
+                    error_message = status.get("message") or "Job failed"
+                    yield f"event: {status['status']}\ndata: {json.dumps({'error': error_message})}\n\n"
+                else:
+                    yield f"event: progress\ndata: {json.dumps(status)}\n\n"
                 last_status = status.copy()
 
             # Stop if job is complete or failed
@@ -247,3 +266,39 @@ async def stream_ai_job_progress(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/job/{job_id}/result", response_model=AiJobResult)
+async def get_ai_job_result(
+    job_id: str,
+    authorized: bool = Depends(verify_api_key)
+):
+    """Get the result of a completed AI job"""
+    plugin = plugin_manager.get("ai-playground")
+
+    if not plugin:
+        raise HTTPException(status_code=501, detail="AI Playground plugin not found")
+
+    result = plugin.get_job_result(job_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if result["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Job is not completed yet")
+
+    return AiJobResult(**result)
+
+
+@router.post("/download", response_model=AiDownloadResponse)
+async def create_ai_download(
+    request: AiDownloadRequest,
+    authorized: bool = Depends(verify_api_key)
+):
+    """Generate a download URL for a processed image"""
+    if not request.result_url and not request.source_url:
+        raise HTTPException(status_code=400, detail="result_url or source_url is required")
+
+    download_url = request.result_url or request.source_url
+    expires_at = (datetime.utcnow() + timedelta(hours=1)).isoformat() + "Z"
+
+    return AiDownloadResponse(download_url=download_url, expires_at=expires_at)

@@ -7,13 +7,11 @@ This plugin handles three types of AI jobs:
 """
 
 from __future__ import annotations
-import asyncio
-import io
 import logging
+import time
 import uuid
 import threading
-from typing import Any, Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Optional, Tuple
 
 from app.plugins.base import BasePlugin, ProcessingMode
 from app.services.ai_processor import AiImageProcessor
@@ -98,7 +96,10 @@ class AiPlaygroundPlugin(BasePlugin):
                 "result_urls": [],
                 "source_urls": source_urls,
                 "metadata": [],
+                "current_image": None,
                 "error": None,
+                "started_at": time.time(),
+                "completed_at": None,
             }
             self._cancel_events[job_id] = threading.Event()
 
@@ -107,7 +108,15 @@ class AiPlaygroundPlugin(BasePlugin):
             for idx, url in enumerate(source_urls):
                 # Check for cancellation
                 if self._cancel_events[job_id].is_set():
-                    raise Exception("Job cancelled")
+                    with self._job_lock:
+                        job = self._jobs.get(job_id, {})
+                        job["status"] = "cancelled"
+                        job["error"] = "Job cancelled"
+                    return {"success": False, "error": "Job cancelled"}
+
+                with self._job_lock:
+                    job = self._jobs.get(job_id, {})
+                    job["current_image"] = url
 
                 # Download source image
                 try:
@@ -156,7 +165,12 @@ class AiPlaygroundPlugin(BasePlugin):
                 with self._job_lock:
                     job = self._jobs.get(job_id, {})
                     job["result_urls"].append(result_url)
-                    job["metadata"].append(metadata)
+                    metadata_entry = {
+                        "source_url": url,
+                        "result_url": result_url,
+                        "details": metadata,
+                    }
+                    job["metadata"].append(metadata_entry)
                     job["processed"] += 1
                     job["progress"] = int((idx + 1) / len(source_urls) * 100)
 
@@ -165,6 +179,7 @@ class AiPlaygroundPlugin(BasePlugin):
                 job = self._jobs.get(job_id, {})
                 job["status"] = "completed"
                 job["progress"] = 100
+                job["completed_at"] = time.time()
 
             return {
                 "success": True,
@@ -282,7 +297,37 @@ class AiPlaygroundPlugin(BasePlugin):
                 "progress": job["progress"],
                 "processed": job["processed"],
                 "total": job["total"],
+                "current_image": job.get("current_image"),
                 "message": job.get("error"),
+            }
+
+    def get_job_result(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get the result of a completed job
+
+        Args:
+            job_id: Job identifier
+
+        Returns:
+            Job result dict or None if not found
+        """
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+
+            started_at = job.get("started_at")
+            completed_at = job.get("completed_at")
+            processing_time_ms = None
+            if started_at and completed_at:
+                processing_time_ms = int((completed_at - started_at) * 1000)
+
+            return {
+                "job_id": job["job_id"],
+                "status": job["status"],
+                "result_image_urls": job["result_urls"],
+                "source_image_urls": job["source_urls"],
+                "processing_time_ms": processing_time_ms or 0,
+                "metadata": job["metadata"],
             }
 
     def cancel_job(self, job_id: str) -> bool:
