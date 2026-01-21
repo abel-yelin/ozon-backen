@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import health, image, ozon, ai
+from app.api.v1 import health, image, ozon, ai, image_studio
 from app.plugins.plugin_manager import plugin_manager
 from app.plugins.image.compress import ImageCompressPlugin
 from app.plugins.ozon.download import OzonDownloadPlugin
@@ -53,6 +53,7 @@ app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(image.router, prefix="/api/v1/image", tags=["image"])
 app.include_router(ozon.router, prefix="/api/v1", tags=["ozon"])
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["ai"])
+app.include_router(image_studio.router, prefix="/api/v1", tags=["image-studio"])
 
 
 # Startup/Shutdown events
