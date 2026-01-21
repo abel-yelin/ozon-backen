@@ -10,6 +10,7 @@ from PIL import Image
 
 from app.services.storage import R2Service
 from app.services.image_studio_queue import check_cancelled, get_cancel_event
+from app.core.config import settings
 
 from app.services.image_studio_engine import (
     process_image_with_nano_banana,
@@ -274,12 +275,13 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     stem = str(payload.get("stem") or "").strip()
     options = payload.get("options") or {}
 
-    api_key = str(options.get("api_key") or "")
-    api_base = str(options.get("api_base") or "https://llmxapi.com/v1beta")
-    model = str(options.get("model") or "models/gemini-2.5-flash-image-preview")
-    target_width = int(options.get("target_width") or 1500)
-    target_height = int(options.get("target_height") or 2000)
-    temperature = float(options.get("default_temperature") or 0.5)
+    ai_defaults = settings.plugins_config.get("ai", {})
+    api_key = str(ai_defaults.get("api_key") or options.get("api_key") or "")
+    api_base = str(ai_defaults.get("api_base") or options.get("api_base") or "https://llmxapi.com/v1beta")
+    model = str(ai_defaults.get("model") or options.get("model") or "models/gemini-2.5-flash-image-preview")
+    target_width = int(ai_defaults.get("target_width") or options.get("target_width") or 1500)
+    target_height = int(ai_defaults.get("target_height") or options.get("target_height") or 2000)
+    temperature = float(ai_defaults.get("default_temperature") or options.get("default_temperature") or 0.5)
     output_format = str(options.get("output_format") or "png").lower()
     templates = options.get("prompt_templates") or {}
     use_english = bool(options.get("use_english"))

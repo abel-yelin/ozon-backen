@@ -320,6 +320,15 @@ def process_image_with_nano_banana(
             "generationConfig": {"temperature": temperature},
         }
 
+        try:
+            prompt_len = len(str(prompt or ""))
+            print(
+                f"[image-studio] payload summary: api_base={api_base} model={model} parts={len(parts)} prompt_len={prompt_len}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
         max_retries = 2
         last_error = None
         final_response = None
