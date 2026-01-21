@@ -159,6 +159,8 @@ def _check_cancel(cancel_event):
 
 def _post_with_cancel(url: str, payload: dict, headers: dict, timeout: tuple, cancel_event):
     session = requests.Session()
+    # Disable proxy to avoid ProxyError when proxy is not available
+    session.trust_env = False
     done = threading.Event()
     box = {}
 
