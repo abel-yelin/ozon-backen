@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-import requests
+import httpx
 from PIL import Image, ImageFilter
 
 from app.services.image_studio_queue import CancelledError
@@ -158,15 +158,17 @@ def _check_cancel(cancel_event):
 
 
 def _post_with_cancel(url: str, payload: dict, headers: dict, timeout: tuple, cancel_event):
-    session = requests.Session()
-    # Disable proxy to avoid ProxyError when proxy is not available
-    session.trust_env = False
+    # Use httpx with better connection handling and no proxy
+    limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+    timeout_config = httpx.Timeout(timeout[1], connect=timeout[0])
+
     done = threading.Event()
     box = {}
 
     def _run():
         try:
-            box["resp"] = session.post(url, json=payload, headers=headers, timeout=timeout)
+            with httpx.Client(limits=limits, timeout=timeout_config, trust_env=False) as client:
+                box["resp"] = client.post(url, json=payload, headers=headers)
         except Exception as e:
             box["err"] = e
         finally:
@@ -176,10 +178,6 @@ def _post_with_cancel(url: str, payload: dict, headers: dict, timeout: tuple, ca
     t.start()
     while not done.is_set():
         if cancel_event is not None and cancel_event.is_set():
-            try:
-                session.close()
-            except Exception:
-                pass
             raise CancelledError("Job cancelled")
         done.wait(0.25)
     if "err" in box:
@@ -371,14 +369,14 @@ def process_image_with_nano_banana(
                     time.sleep(5 * attempt)
                     continue
                 break
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
                 last_error = e
                 if attempt < max_retries:
                     time.sleep(5 * attempt)
                     continue
                 request_error_text = f"Request error after retries: {e}"
                 break
-            except requests.exceptions.RequestException as e:
+            except httpx.HTTPError as e:
                 request_error_text = f"Request exception: {e}"
                 break
 
