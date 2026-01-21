@@ -347,16 +347,39 @@ def process_image_with_nano_banana(
                     except Exception as e:
                         request_error_text = f"Invalid JSON response: {e}"
                         break
-                    candidates = result.get("candidates", [])
+
+                    # Add debug logging
+                    try:
+                        print(f"[image-studio] response keys: {list(result.keys())}", flush=True)
+                        candidates = result.get("candidates", [])
+                        print(f"[image-studio] candidates count: {len(candidates)}", flush=True)
+                        if candidates:
+                            print(f"[image-studio] first candidate keys: {list(candidates[0].keys())}", flush=True)
+                    except Exception:
+                        pass
+
+                    def _extract_inline_data(part):
+                        """Extract inline data from part, checking both inlineData and inline_data keys"""
+                        if not isinstance(part, dict):
+                            return None
+                        inline_data = part.get("inlineData") or part.get("inline_data")
+                        if isinstance(inline_data, dict):
+                            data_value = inline_data.get("data")
+                            if data_value:
+                                return data_value
+                        return None
+
                     image_data_part = None
                     for candidate in candidates:
                         parts = candidate.get("content", {}).get("parts", [])
                         for part in parts:
-                            if "inlineData" in part and isinstance(part.get("inlineData"), dict) and part["inlineData"].get("data"):
-                                image_data_part = part["inlineData"]
+                            result_base64 = _extract_inline_data(part)
+                            if result_base64:
+                                image_data_part = {"data": result_base64}
                                 break
                         if image_data_part:
                             break
+
                     if not image_data_part:
                         request_error_text = "No image data found in response"
                         break
