@@ -4,7 +4,7 @@ import os
 import yaml
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
+from pydantic import model_validator, Field
 from typing import Dict, Any, List
 
 
@@ -86,6 +86,20 @@ class Settings(BaseSettings):
     # Environment
     environment: str = "development"
     debug: bool = False
+
+    # Ozon image push configuration
+    ozon_push_timeout: int = Field(
+        default=30,
+        description="Ozon API timeout in seconds for image push operations"
+    )
+    ozon_push_max_retries: int = Field(
+        default=2,
+        description="Maximum retry attempts for failed image push requests"
+    )
+    ozon_push_validate_urls: bool = Field(
+        default=True,
+        description="Whether to validate R2 URLs before sending to Ozon API"
+    )
 
     # Plugin Config (from YAML) - will be loaded by validator
     plugins_config: Dict[str, Any] = {}
