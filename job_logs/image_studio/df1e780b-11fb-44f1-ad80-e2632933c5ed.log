@@ -1,0 +1,4 @@
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1404
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']

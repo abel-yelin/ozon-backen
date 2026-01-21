@@ -65,7 +65,7 @@ def _infer_content_type(fmt: str) -> str:
 
 def _upload_output(r2: R2Service, data: bytes, key: str, fmt: str) -> str:
     content_type = _infer_content_type(fmt)
-    return r2.upload_bytes(data=data, key=key, content_type=content_type)
+    return r2.upload_bytes_sync(data=data, key=key, content_type=content_type)
 
 
 def _encode_style_prompt(
@@ -259,7 +259,7 @@ def _process_single_image(
 
         r2 = R2Service()
         output_bytes = _read_image_bytes(output_path)
-        output_url = r2.upload_bytes(
+        output_url = r2.upload_bytes_sync(
             data=output_bytes,
             key=output_key,
             content_type=_infer_content_type(output_format),

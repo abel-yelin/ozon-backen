@@ -62,6 +62,26 @@ class R2Service:
         await self._upload_async(data, key, content_type)
         return f"{self.public_url}/{key}"
 
+    def upload_bytes_sync(self, data: bytes, key: str, content_type: str = "image/jpeg") -> str:
+        """
+        Synchronous version of upload_bytes for use in non-async contexts.
+
+        Args:
+            data: Binary data to upload
+            key: R2 storage key (full path)
+            content_type: MIME type
+
+        Returns:
+            Public URL
+        """
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=key,
+            Body=data,
+            ContentType=content_type
+        )
+        return f"{self.public_url}/{key}"
+
     async def _upload_async(self, data: bytes, key: str, content_type: str) -> None:
         """Async wrapper for boto3 upload (runs in thread pool)"""
         loop = asyncio.get_event_loop()
