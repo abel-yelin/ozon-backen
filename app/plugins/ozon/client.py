@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict
 import aiohttp
 from aiohttp import ClientTimeout
 import os
@@ -264,6 +264,47 @@ class OzonClient:
         except Exception as e:
             logger.error(f"Error getting product info: {e}")
             return {"name": "", "description": ""}
+
+    async def update_product_pictures(
+        self,
+        product_id: int,
+        images: Optional[List[str]] = None,
+        images360: Optional[List[str]] = None,
+        color_image: Optional[str] = None
+    ) -> dict:
+        """
+        Update product images on Ozon.
+
+        Replaces all existing images for a product with the provided URLs.
+        The first image in the array becomes the primary image.
+
+        Args:
+            product_id: Ozon product ID
+            images: Main image URLs (max 30, will be truncated)
+            images360: 360° image URLs (max 70, will be truncated)
+            color_image: Marketing color image URL
+
+        Returns:
+            Ozon API response dict
+
+        Raises:
+            Exception: If API call fails
+        """
+        payload = {"product_id": product_id}
+
+        # Add images if provided (truncate to 30)
+        if images is not None:
+            payload["images"] = images[:30]
+
+        # Add images360 if provided (truncate to 70)
+        if images360 is not None:
+            payload["images360"] = images360[:70]
+
+        # Add color_image if provided
+        if color_image is not None:
+            payload["color_image"] = color_image
+
+        return await self._post("/v1/product/pictures", payload)
 
     async def close(self):
         """Close the client (cleanup)"""
