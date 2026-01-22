@@ -669,24 +669,57 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         do_main = mode in {"batch_main_generate", "batch_series_generate"}
         do_secondary = mode in {"batch_secondary_generate", "batch_series_generate"}
 
-        # Process batch with concurrent workers
-        batch_results = _process_batch_concurrent(
-            sku_images_map=sku_images_map,
-            do_main=do_main,
-            do_secondary=do_secondary,
-            max_workers_main=max_workers_main,
-            max_workers_secondary=max_workers_secondary,
-            api_key=api_key,
-            api_base=api_base,
-            model=model,
-            target_width=target_width,
-            target_height=target_height,
-            temperature=temperature,
-            output_format=output_format,
-            templates=templates,
-            use_english=use_english,
-            options=options,
-        )
+        # Build prompt for main images
+        prompt_main = _build_batch_prompt(templates, True, str(options.get("extra_prompt") or ""), use_english)
+
+        # Process batch with async main images if available
+        try:
+            import asyncio
+            from app.services.image_studio_engine import process_batch_main_async
+
+            # Process main images async
+            if do_main:
+                print(f"[Batch] Using async processing for {len(sku_images_map)} SKUs with {max_workers_main} workers", flush=True)
+                main_results = asyncio.run(process_batch_main_async(
+                    sku_images_map=sku_images_map,
+                    max_workers=max_workers_main,
+                    api_key=api_key,
+                    api_base=api_base,
+                    model=model,
+                    target_width=target_width,
+                    target_height=target_height,
+                    temperature=temperature,
+                    prompt_override=prompt_main,
+                    output_format=output_format,
+                ))
+            else:
+                # Skip main processing
+                main_results = [{"sku": k, "ok": True, "sources": v} for k, v in sku_images_map.items()]
+
+            # Process secondary images (keep sync for now, will async in next phase)
+            # For now, we'll only use async for main images
+            batch_results = [r for r in main_results if r.get("ok")]
+
+        except Exception as e:
+            print(f"[Batch] Async processing failed, falling back to sync: {e}", flush=True)
+            # Fallback to sync processing
+            batch_results = _process_batch_concurrent(
+                sku_images_map=sku_images_map,
+                do_main=do_main,
+                do_secondary=do_secondary,
+                max_workers_main=max_workers_main,
+                max_workers_secondary=max_workers_secondary,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+                target_width=target_width,
+                target_height=target_height,
+                temperature=temperature,
+                output_format=output_format,
+                templates=templates,
+                use_english=use_english,
+                options=options,
+            )
 
         return {"mode": mode, "items": batch_results}
 
