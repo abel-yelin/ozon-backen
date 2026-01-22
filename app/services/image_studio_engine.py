@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import tempfile
 import time
 import threading
 from pathlib import Path
@@ -11,6 +13,7 @@ import httpx
 from PIL import Image, ImageFilter
 
 from app.services.image_studio_queue import CancelledError
+from app.services.async_utils import AsyncFileDownloader, AsyncRateLimiter
 
 
 def encode_image_for_model(img: Image.Image, max_long_side: int = 1600) -> str:
@@ -476,3 +479,143 @@ def process_image_with_nano_banana(
         return True, f"Image processed: {output_path}"
     except Exception as e:
         return False, str(e)
+
+
+# Async batch processing functions
+async def _process_sku_main_async(
+    sku_name: str,
+    sources: list[dict],
+    api_key: str,
+    api_base: str,
+    model: str,
+    target_width: int,
+    target_height: int,
+    temperature: float,
+    prompt_override: str,
+    output_format: str,
+    rate_limiter: AsyncRateLimiter,
+    downloader: AsyncFileDownloader,
+) -> dict:
+    """Process main image for a single SKU asynchronously."""
+    from app.services.image_studio_queue import check_cancelled
+
+    check_cancelled()
+
+    if not sources:
+        return {"sku": sku_name, "ok": False, "error": "No sources"}
+
+    sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
+
+    # Find main image
+    from app.services.image_studio_worker import _stem_from_name, _is_main_stem
+
+    head = None
+    for item in sources_sorted:
+        stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+        if _is_main_stem(stem_value):
+            head = item
+            break
+    if head is None:
+        head = sources_sorted[0]
+
+    if not head:
+        return {"sku": sku_name, "ok": False, "error": "No head image"}
+
+    async with rate_limiter:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            suffix = f".{output_format}"
+
+            # Download source image async
+            source_path = temp_path / f"input{suffix}"
+            await downloader.download(str(head.get("url")), source_path)
+
+            # Process with AI (this part is still CPU-bound, we'll keep it sync for now)
+            output_path = temp_path / f"output{suffix}"
+
+            ok, msg = process_image_with_nano_banana(
+                api_key, api_base, model,
+                str(source_path), str(output_path),
+                prompt_override, temperature,
+                target_width, target_height,
+                True,  # is_main
+                cancel_event=None,  # TODO: pass cancel event
+            )
+
+            if not ok:
+                return {"sku": sku_name, "ok": False, "error": msg}
+
+            # Upload to R2
+            from app.services.storage import R2Service
+            from app.services.image_studio_worker import _infer_content_type
+
+            r2 = R2Service()
+
+            # For now, sync upload (we'll async this in next task)
+            output_bytes = output_path.read_bytes()
+            output_url = r2.upload_bytes_sync(
+                data=output_bytes,
+                key=f"image-studio/{sku_name}/{_stem_from_name(head.get('name'))}_{int(time.time())}.{output_format}",
+                content_type=_infer_content_type(output_format),
+            )
+
+            # Build metadata
+            from PIL import Image
+            img = Image.open(output_path)
+            meta = {"width": img.width, "height": img.height, "size_bytes": len(output_bytes)}
+
+            return {
+                "sku": sku_name,
+                "ok": True,
+                "source_url": head.get("url"),
+                "result_url": output_url,
+                "metadata": meta,
+                "sources": sources,
+            }
+
+
+async def process_batch_main_async(
+    sku_images_map: dict,
+    max_workers: int,
+    api_key: str,
+    api_base: str,
+    model: str,
+    target_width: int,
+    target_height: int,
+    temperature: float,
+    prompt_override: str,
+    output_format: str,
+) -> list[dict]:
+    """Process main images for all SKUs asynchronously."""
+    import asyncio
+
+    rate_limiter = AsyncRateLimiter(max_workers)
+    downloader = AsyncFileDownloader()
+
+    try:
+        tasks = [
+            _process_sku_main_async(
+                sku_name, sources,
+                api_key, api_base, model,
+                target_width, target_height, temperature,
+                prompt_override, output_format,
+                rate_limiter, downloader,
+            )
+            for sku_name, sources in sku_images_map.items()
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        processed = []
+        for result in results:
+            if isinstance(result, Exception):
+                processed.append({"ok": False, "error": str(result)})
+            else:
+                processed.append(result)
+
+        return processed
+
+    finally:
+        await downloader.close()
+
