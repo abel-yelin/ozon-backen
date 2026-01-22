@@ -163,3 +163,40 @@ class AsyncBatchUploader:
                 })
 
         return uploaded
+
+
+async def download_image_batch(
+    urls: list[str],
+    output_dir: Path,
+    max_concurrent: int = 10
+) -> dict[str, Path]:
+    """
+    Download multiple images concurrently.
+
+    Args:
+        urls: List of image URLs
+        output_dir: Directory to save images
+        max_concurrent: Maximum concurrent downloads
+
+    Returns:
+        Dictionary mapping URL to downloaded file path
+    """
+    downloader = AsyncFileDownloader()
+    rate_limiter = AsyncRateLimiter(max_concurrent)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    async def download_one(url: str) -> tuple[str, Path]:
+        async with rate_limiter:
+            filename = url.split("?")[0].split("/")[-1] or f"img_{hash(url)}.webp"
+            output_path = output_dir / filename
+            await downloader.download(url, output_path)
+            return url, output_path
+
+    try:
+        import asyncio
+        results = await asyncio.gather(*[download_one(url) for url in urls])
+        return dict(results)
+    finally:
+        await downloader.close()
+
