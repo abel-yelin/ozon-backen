@@ -1,6 +1,6 @@
 """FastAPI application entry point"""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import health, image, ozon, ai, image_studio, ws_progress
 from app.plugins.plugin_manager import plugin_manager
@@ -55,6 +55,13 @@ app.include_router(ozon.router, prefix="/api/v1", tags=["ozon"])
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["ai"])
 app.include_router(image_studio.router, prefix="/api/v1", tags=["image-studio"])
 app.include_router(ws_progress.router, prefix="/api/v1", tags=["websocket"])
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    from prometheus_client import generate_latest, REGISTRY
+    return Response(content=generate_latest(REGISTRY), media_type="text/plain")
 
 
 # Startup/Shutdown events

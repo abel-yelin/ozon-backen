@@ -590,8 +590,17 @@ async def process_batch_main_async(
     """Process main images for all SKUs asynchronously with progress updates."""
     import asyncio
 
+    from app.services.metrics import (
+        track_generation,
+        active_jobs,
+        images_generated
+    )
+
     rate_limiter = AsyncRateLimiter(max_workers)
     downloader = AsyncFileDownloader()
+
+    # Track active job
+    active_jobs.inc()
 
     # Progress tracking
     if job_id:
@@ -665,9 +674,16 @@ async def process_batch_main_async(
             except Exception:
                 pass
 
+        # Record metrics
+        successful = sum(1 for p in processed if p.get("ok"))
+        failed = sum(1 for p in processed if not p.get("ok"))
+        images_generated.labels(mode="batch_main_generate", status="success").inc(successful)
+        images_generated.labels(mode="batch_main_generate", status="failed").inc(failed)
+
         return processed
 
     finally:
         await downloader.close()
+        active_jobs.dec()
 
 
