@@ -125,6 +125,66 @@ class R2Service:
         except Exception:
             return False
 
+    async def upload_bytes_async(
+        self,
+        data: bytes,
+        key: str,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        """
+        Upload bytes to R2 asynchronously.
+
+        Args:
+            data: Bytes to upload
+            key: Storage key/path
+            content_type: MIME type
+
+        Returns:
+            Public URL of uploaded file
+
+        Raises:
+            Exception: On upload failure
+        """
+        await self._upload_async(data, key, content_type)
+        return f"{self.public_url}/{key}"
+
+    async def upload_batch_async(
+        self,
+        items: list[dict],  # Each with 'data', 'key', 'content_type'
+        max_concurrent: int = 10
+    ) -> list[dict]:
+        """
+        Upload multiple items concurrently.
+
+        Args:
+            items: List of upload items
+            max_concurrent: Max concurrent uploads
+
+        Returns:
+            List of results with URLs
+        """
+        from app.services.async_utils import AsyncRateLimiter
+
+        async def upload_one(item):
+            return await self.upload_bytes_async(
+                data=item["data"],
+                key=item["key"],
+                content_type=item.get("content_type", "application/octet-stream"),
+            )
+
+        rate_limiter = AsyncRateLimiter(max_concurrent)
+        async with rate_limiter:
+            results = await asyncio.gather(
+                *[upload_one(item) for item in items],
+                return_exceptions=True
+            )
+
+        return [
+            {"url": r, "ok": True} if not isinstance(r, Exception)
+            else {"ok": False, "error": str(r)}
+            for r in results
+        ]
+
 
 # Alias for compatibility with plugin code
 R2StorageService = R2Service
