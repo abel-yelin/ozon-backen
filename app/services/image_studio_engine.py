@@ -14,6 +14,7 @@ from app.services.image_studio_queue import CancelledError
 
 
 def encode_image_for_model(img: Image.Image, max_long_side: int = 1600) -> str:
+    """Encode image to base64 using WebP for better compression."""
     if img.mode != "RGB":
         img = img.convert("RGB")
     w, h = img.size
@@ -24,7 +25,8 @@ def encode_image_for_model(img: Image.Image, max_long_side: int = 1600) -> str:
         nh = max(1, int(round(h * scale)))
         img = img.resize((nw, nh), Image.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    # Use WebP for better compression (50-70% smaller than PNG)
+    img.save(buffer, format="WEBP", quality=85, method=6)
     image_bytes = buffer.getvalue()
     return base64.b64encode(image_bytes).decode("utf-8")
 
@@ -268,16 +270,28 @@ def process_image_with_nano_banana(
             send_img = send_img.resize((nw0, nh0), Image.LANCZOS)
 
         image_bytes = b""
-        for _ in range(6):
+        # Use WebP for better compression (smaller files, faster upload)
+        for attempt in range(6):
             buffer = io.BytesIO()
-            send_img.save(buffer, format="PNG", optimize=True)
+
+            # First attempt: WebP with high quality
+            if attempt == 0:
+                send_img.save(buffer, format="WEBP", quality=85, method=6)
+            else:
+                # Fallback to PNG if WebP is still too large
+                send_img.save(buffer, format="PNG", optimize=True)
+
             image_bytes = buffer.getvalue()
+
             if not request_max_bytes or len(image_bytes) <= request_max_bytes:
                 break
+
+            # Still too large - reduce dimensions
             w1, h1 = send_img.size
             long1 = max(w1, h1)
             if long1 <= 256:
                 break
+
             ratio = (request_max_bytes / float(len(image_bytes))) ** 0.5 if request_max_bytes else 0.9
             ratio = max(0.5, min(0.95, ratio * 0.95))
             nw1 = max(1, int(round(w1 * ratio)))
@@ -287,7 +301,9 @@ def process_image_with_nano_banana(
             send_img = send_img.resize((nw1, nh1), Image.LANCZOS)
 
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
-        parts = [{"inlineData": {"mimeType": "image/png", "data": b64_image}}]
+        # Detect format from first bytes (WebP magic: RIFF....WEBP)
+        mime_type = "image/webp" if image_bytes[:4] == b"RIFF" and b"WEBP" in image_bytes[:12] else "image/png"
+        parts = [{"inlineData": {"mimeType": mime_type, "data": b64_image}}]
 
         ref_paths: Iterable[str] = reference_image_paths or []
         for rp in ref_paths:
