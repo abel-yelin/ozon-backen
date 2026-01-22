@@ -585,14 +585,28 @@ async def process_batch_main_async(
     temperature: float,
     prompt_override: str,
     output_format: str,
+    job_id: str = None,
 ) -> list[dict]:
-    """Process main images for all SKUs asynchronously."""
+    """Process main images for all SKUs asynchronously with progress updates."""
     import asyncio
 
     rate_limiter = AsyncRateLimiter(max_workers)
     downloader = AsyncFileDownloader()
 
+    # Progress tracking
+    if job_id:
+        try:
+            from app.api.v1.ws_progress import progress_manager
+            will_send_progress = True
+        except Exception:
+            will_send_progress = False
+    else:
+        will_send_progress = False
+
     try:
+        total = len(sku_images_map)
+        processed_count = 0
+
         tasks = [
             _process_sku_main_async(
                 sku_name, sources,
@@ -608,14 +622,52 @@ async def process_batch_main_async(
 
         # Process results
         processed = []
-        for result in results:
+        for i, result in enumerate(results):
+            processed_count += 1
+
+            # Send progress update
+            if will_send_progress:
+                try:
+                    sku_name = result.get("sku") if isinstance(result, dict) else "unknown"
+                    await progress_manager.send_progress(
+                        job_id,
+                        {
+                            "type": "progress",
+                            "stage": "main",
+                            "current": processed_count,
+                            "total": total,
+                            "sku": sku_name,
+                            "percentage": round(processed_count / total * 100, 1),
+                            "status": "success" if isinstance(result, dict) and result.get("ok") else "error"
+                        }
+                    )
+                except Exception:
+                    pass  # Don't fail job if progress update fails
+
             if isinstance(result, Exception):
                 processed.append({"ok": False, "error": str(result)})
             else:
                 processed.append(result)
 
+        # Send completion message
+        if will_send_progress:
+            try:
+                await progress_manager.send_progress(
+                    job_id,
+                    {
+                        "type": "complete",
+                        "stage": "main",
+                        "total": total,
+                        "successful": sum(1 for p in processed if p.get("ok")),
+                        "failed": sum(1 for p in processed if not p.get("ok")),
+                    }
+                )
+            except Exception:
+                pass
+
         return processed
 
     finally:
         await downloader.close()
+
 

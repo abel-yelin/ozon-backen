@@ -527,6 +527,7 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     mode = str(payload.get("mode") or "").strip()
     sku = str(payload.get("sku") or "").strip()
     stem = str(payload.get("stem") or "").strip()
+    job_id = str(payload.get("job_id") or "").strip()  # For progress tracking
     options = payload.get("options") or {}
 
     ai_defaults = settings.plugins_config.get("ai", {})
@@ -691,6 +692,7 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                     temperature=temperature,
                     prompt_override=prompt_main,
                     output_format=output_format,
+                    job_id=job_id,  # Pass for progress updates
                 ))
             else:
                 # Skip main processing
