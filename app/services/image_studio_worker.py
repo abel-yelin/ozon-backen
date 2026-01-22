@@ -4,12 +4,13 @@ import time
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 import requests
 from PIL import Image
 
 from app.services.storage import R2Service
-from app.services.image_studio_queue import check_cancelled, get_cancel_event
+from app.services.image_studio_queue import check_cancelled, get_cancel_event, run_in_job_context, capture_job_context
 from app.core.config import settings
 
 from app.services.image_studio_engine import (
@@ -268,6 +269,259 @@ def _process_single_image(
         return output_url, meta
 
 
+def _process_batch_concurrent(
+    sku_images_map: Dict[str, List[Dict[str, Any]]],
+    do_main: bool,
+    do_secondary: bool,
+    max_workers_main: int,
+    max_workers_secondary: int,
+    api_key: str,
+    api_base: str,
+    model: str,
+    target_width: int,
+    target_height: int,
+    temperature: float,
+    output_format: str,
+    templates: Dict[str, str],
+    use_english: bool,
+    options: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Process batch images concurrently using ThreadPoolExecutor (two-stage approach)."""
+    all_results = []
+    ctx = capture_job_context()
+
+    # Stage 1: Process main images concurrently
+    main_results = []
+    main_success = 0
+    main_failed = 0
+
+    def _process_sku_main(sku_name: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Process main image for a single SKU."""
+        check_cancelled()
+        if not sources:
+            return {"sku": sku_name, "ok": False, "error": "No sources"}
+
+        sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
+
+        # Find main image (ending with "_1")
+        head = None
+        for item in sources_sorted:
+            stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+            if _is_main_stem(stem_value):
+                head = item
+                break
+        if head is None:
+            head = sources_sorted[0]
+
+        if not head:
+            return {"sku": sku_name, "ok": False, "error": "No head image"}
+
+        # Process main image
+        is_main = True
+        prompt_override = _build_batch_prompt(templates, is_main, str(options.get("extra_prompt") or ""), use_english)
+        if not prompt_override:
+            prompt_override = str(options.get("extra_prompt") or "")
+
+        output_key = f"image-studio/{sku_name}/{_stem_from_name(head.get('name') or _safe_filename_from_url(head.get('url') or ''))}_{int(time.time())}.{output_format}"
+
+        try:
+            output_url, meta = _process_single_image(
+                api_key,
+                api_base,
+                model,
+                target_width,
+                target_height,
+                temperature,
+                prompt_override,
+                str(head.get("url") or ""),
+                output_key,
+                output_format,
+                is_main,
+            )
+            return {
+                "sku": sku_name,
+                "ok": True,
+                "source_url": head.get("url"),
+                "result_url": output_url,
+                "metadata": meta,
+                "sources": sources,  # Pass for secondary processing
+            }
+        except Exception as e:
+            return {"sku": sku_name, "ok": False, "error": str(e), "sources": sources}
+
+    # Stage 1: Submit all main image tasks
+    if do_main:
+        print(f"[Batch] Stage 1: Processing {len(sku_images_map)} SKUs with {max_workers_main} workers", flush=True)
+        futures = {}
+        with ThreadPoolExecutor(max_workers=max_workers_main) as executor:
+            for sku_name, sources in sku_images_map.items():
+                check_cancelled()
+                print(f"[Batch Main] Submitting: {sku_name}", flush=True)
+                future = executor.submit(run_in_job_context, ctx, _process_sku_main, str(sku_name), list(sources or []))
+                futures[future] = sku_name
+
+            pending = set(futures.keys())
+            try:
+                while pending:
+                    check_cancelled()
+                    done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        sku_name = futures.get(future) or ""
+                        try:
+                            r = future.result()
+                        except Exception as e:
+                            r = {"sku": sku_name, "ok": False, "error": str(e)}
+                        main_results.append(r)
+                        if r.get("ok"):
+                            main_success += 1
+                            print(f"[Batch Main] {sku_name} ✓ Success", flush=True)
+                        else:
+                            main_failed += 1
+                            print(f"[Batch Main] {sku_name} ✗ Failed: {r.get('error')}", flush=True)
+            finally:
+                for f in pending:
+                    try:
+                        f.cancel()
+                    except Exception:
+                        pass
+
+        print(f"[Batch] Stage 1 complete: {main_success} success, {main_failed} failed", flush=True)
+        all_results.extend([r for r in main_results if r.get("ok")])
+    else:
+        # If not processing main, just pass through all sources
+        for sku_name, sources in sku_images_map.items():
+            main_results.append({"sku": sku_name, "ok": True, "sources": sources})
+
+    # Stage 2: Process secondary images concurrently
+    secondary_results = []
+    secondary_success = 0
+    secondary_failed = 0
+
+    if do_secondary:
+        # Collect all secondary images from successful SKUs
+        secondary_tasks = []
+
+        for result in main_results:
+            if not result.get("ok"):
+                continue
+            sku_name = result.get("sku")
+            sources = result.get("sources") or []
+            if not sources:
+                continue
+
+            sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
+
+            # Find main image to exclude
+            head = None
+            for item in sources_sorted:
+                stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+                if _is_main_stem(stem_value):
+                    head = item
+                    break
+            if head is None:
+                head = sources_sorted[0]
+
+            # Extract style prompt from main result if available
+            style_prompt = ""
+            if result.get("result_url") and options.get("include_style_prompt"):
+                instruction = _pick_prompt(templates, "style_extract_instruction_cn", use_english)
+                if instruction:
+                    try:
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            temp_path = Path(temp_dir) / f"head.{output_format}"
+                            _download_to_file(result["result_url"], temp_path)
+                            style_prompt = _encode_style_prompt(temp_path, api_key, api_base, model, instruction)
+                    except Exception:
+                        pass
+
+            # Collect secondary images
+            for item in sources_sorted:
+                if item is head:
+                    continue
+                secondary_tasks.append((sku_name, item, style_prompt))
+
+        if secondary_tasks:
+            max_sec_workers = min(max_workers_secondary, len(secondary_tasks))
+            print(f"[Batch] Stage 2: Processing {len(secondary_tasks)} secondary images with {max_sec_workers} workers", flush=True)
+
+            def _process_one_secondary(sku_name: str, item: Dict[str, Any], style_prompt: str) -> Dict[str, Any]:
+                """Process a single secondary image."""
+                check_cancelled()
+                stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+                is_main = _is_main_stem(stem_value)
+
+                prompt_override = _build_batch_prompt(templates, is_main, str(options.get("extra_prompt") or ""), use_english)
+                if style_prompt:
+                    prompt_override = "\n\n".join([prompt_override, style_prompt]).strip()
+
+                output_key = f"image-studio/{sku_name}/{_stem_from_name(item.get('name') or _safe_filename_from_url(item.get('url') or ''))}_{int(time.time())}.{output_format}"
+
+                try:
+                    output_url, meta = _process_single_image(
+                        api_key,
+                        api_base,
+                        model,
+                        target_width,
+                        target_height,
+                        temperature,
+                        prompt_override,
+                        str(item.get("url") or ""),
+                        output_key,
+                        output_format,
+                        is_main,
+                    )
+                    return {
+                        "sku": sku_name,
+                        "ok": True,
+                        "source_url": item.get("url"),
+                        "result_url": output_url,
+                        "metadata": meta,
+                    }
+                except Exception as e:
+                    return {"sku": sku_name, "ok": False, "error": str(e)}
+
+            futures = {}
+            with ThreadPoolExecutor(max_workers=max_sec_workers) as executor:
+                for sku_name, item, style_prompt in secondary_tasks:
+                    check_cancelled()
+                    rel = f"{sku_name}/{item.get('name', '')}"
+                    print(f"[Batch Secondary] Submitting: {rel}", flush=True)
+                    future = executor.submit(run_in_job_context, ctx, _process_one_secondary, sku_name, item, style_prompt)
+                    futures[future] = (sku_name, item.get("name", ""))
+
+                pending = set(futures.keys())
+                try:
+                    while pending:
+                        check_cancelled()
+                        done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            sku_name, name = futures.get(future) or ("", "")
+                            rel = f"{sku_name}/{name}" if sku_name else name
+                            try:
+                                r = future.result()
+                            except Exception as e:
+                                r = {"sku": sku_name, "ok": False, "error": str(e)}
+                            secondary_results.append(r)
+                            if r.get("ok"):
+                                secondary_success += 1
+                                print(f"[Batch Secondary] {rel} ✓ Success", flush=True)
+                            else:
+                                secondary_failed += 1
+                                print(f"[Batch Secondary] {rel} ✗ Failed: {r.get('error')}", flush=True)
+                finally:
+                    for f in pending:
+                        try:
+                            f.cancel()
+                        except Exception:
+                            pass
+
+            print(f"[Batch] Stage 2 complete: {secondary_success} success, {secondary_failed} failed", flush=True)
+            all_results.extend([r for r in secondary_results if r.get("ok")])
+
+    print(f"[Batch] All stages complete: {len(all_results)} images processed", flush=True)
+    return all_results
+
+
 def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     check_cancelled()
     mode = str(payload.get("mode") or "").strip()
@@ -375,12 +629,66 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if mode in {"batch_main_generate", "batch_secondary_generate", "batch_series_generate"}:
         sku_images_map = options.get("sku_images_map") or {}
-        for sku_name, sources in sku_images_map.items():
-            check_cancelled()
-            do_main = mode in {"batch_main_generate", "batch_series_generate"}
-            do_secondary = mode in {"batch_secondary_generate", "batch_series_generate"}
-            _process_images_for_sku(str(sku_name), list(sources or []), do_main, do_secondary)
-        return {"mode": mode, "items": results}
+
+        # Get max_workers from options or config, with limits
+        ai_defaults = settings.plugins_config.get("ai", {})
+        default_workers = int(ai_defaults.get("image_workers", 30))
+
+        max_workers_main = 0
+        try:
+            max_workers_main = int(options.get("max_workers_main") or options.get("max_workers") or 0)
+        except Exception:
+            max_workers_main = 0
+        if max_workers_main <= 0:
+            max_workers_main = default_workers
+        if max_workers_main < 1:
+            max_workers_main = 1
+        if max_workers_main > 60:
+            max_workers_main = 60
+
+        max_workers_secondary = 0
+        try:
+            max_workers_secondary = int(options.get("max_workers_secondary") or options.get("max_workers") or 0)
+        except Exception:
+            max_workers_secondary = 0
+        if max_workers_secondary <= 0:
+            max_workers_secondary = default_workers
+        if max_workers_secondary < 1:
+            max_workers_secondary = 1
+        if max_workers_secondary > 60:
+            max_workers_secondary = 60
+
+        sku_list = list(sku_images_map.keys())
+        if len(sku_list) == 0:
+            return {"mode": mode, "items": []}
+
+        # Limit workers to number of SKUs
+        if max_workers_main > len(sku_list):
+            max_workers_main = len(sku_list)
+
+        do_main = mode in {"batch_main_generate", "batch_series_generate"}
+        do_secondary = mode in {"batch_secondary_generate", "batch_series_generate"}
+
+        # Process batch with concurrent workers
+        batch_results = _process_batch_concurrent(
+            sku_images_map=sku_images_map,
+            do_main=do_main,
+            do_secondary=do_secondary,
+            max_workers_main=max_workers_main,
+            max_workers_secondary=max_workers_secondary,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            target_width=target_width,
+            target_height=target_height,
+            temperature=temperature,
+            output_format=output_format,
+            templates=templates,
+            use_english=use_english,
+            options=options,
+        )
+
+        return {"mode": mode, "items": batch_results}
 
     if mode == "folder_generate":
         sources = options.get("source_images") or []

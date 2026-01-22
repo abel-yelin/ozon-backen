@@ -23,3 +23,4 @@ plugins:
     target_width: 1500
     target_height: 2000
     default_temperature: 0.5
+    image_workers: 30  # Default concurrent workers for batch processing (max 60)
