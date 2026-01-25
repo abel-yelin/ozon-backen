@@ -1,0 +1,119 @@
+[Batch] Stage 1: Processing 2 SKUs with 2 workers
+[Batch Main] Submitting: 1941925276-qIyR
+[Batch Main] Submitting: 2030279507-zLdO
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=2628
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=2628
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[Batch Main] 2030279507-zLdO ✓ Success
+[Batch Main] 1941925276-qIyR ✓ Success
+[Batch] Stage 1 complete: 2 success, 0 failed
+[Batch] Stage 2: Processing 17 secondary images with 17 workers
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_2.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_3.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_4.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_5.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_6.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_7.jpg
+[Batch Secondary] Submitting: 2030279507-zLdO/2030279507-zLdO_8.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_10.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_11.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_2.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_3.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_4.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_5.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_6.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_7.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_8.jpg
+[Batch Secondary] Submitting: 1941925276-qIyR/1941925276-qIyR_9.jpg
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_3.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_7.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_8.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_11.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_7.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_4.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_5.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_2.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_4.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_9.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_6.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_10.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_8.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_2.jpg ✓ Success
+[Batch Secondary] 2030279507-zLdO/2030279507-zLdO_5.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_3.jpg ✓ Success
+[Batch Secondary] 1941925276-qIyR/1941925276-qIyR_6.jpg ✓ Success
+[Batch] Stage 2 complete: 17 success, 0 failed
+[Batch] All stages complete: 19 images processed

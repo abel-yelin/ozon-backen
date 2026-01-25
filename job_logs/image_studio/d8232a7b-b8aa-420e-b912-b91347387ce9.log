@@ -1,0 +1,29 @@
+[Batch] Stage 1: Processing 1 SKUs with 1 workers
+[Batch Main] Submitting: 1685323528-BovQ
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=2628
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[Batch Main] 1685323528-BovQ ✓ Success
+[Batch] Stage 1 complete: 1 success, 0 failed
+[Batch] Stage 2: Processing 3 secondary images with 3 workers
+[Batch Secondary] Submitting: 1685323528-BovQ/1685323528-BovQ_2.jpg
+[Batch Secondary] Submitting: 1685323528-BovQ/1685323528-BovQ_3.jpg
+[Batch Secondary] Submitting: 1685323528-BovQ/1685323528-BovQ_4.jpg
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] payload summary: api_base=https://llmxapi.com/v1beta model=models/gemini-2.5-flash-image parts=2 prompt_len=1746
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[image-studio] response keys: ['candidates', 'promptFeedback', 'usageMetadata', 'modelVersion', 'responseId']
+[image-studio] candidates count: 1
+[image-studio] first candidate keys: ['content', 'finishReason', 'index', 'safetyRatings']
+[Batch Secondary] 1685323528-BovQ/1685323528-BovQ_4.jpg ✓ Success
+[Batch Secondary] 1685323528-BovQ/1685323528-BovQ_3.jpg ✓ Success
+[Batch Secondary] 1685323528-BovQ/1685323528-BovQ_2.jpg ✓ Success
+[Batch] Stage 2 complete: 3 success, 0 failed
+[Batch] All stages complete: 4 images processed

@@ -53,7 +53,50 @@ class OzonClient:
 
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.post(url, json=payload, headers=headers) as response:
-                data = await response.json()
+                # Ozon API returns text/plain Content-Type, so we need to ignore content type check
+                # Also, get raw text first to handle potential formatting issues
+                text = await response.text()
+
+                # Log the raw response for debugging
+                if os.environ.get("OZON_DEBUG") == "1":
+                    logger.debug(f"Ozon API raw response {path}: {text}")
+
+                # Parse JSON, handling potential extra whitespace or multiple objects
+                try:
+                    # Try parsing the full response first
+                    data = json.loads(text)
+                except json.JSONDecodeError as e:
+                    # If that fails, try to extract just the first JSON object
+                    # Ozon sometimes returns responses with extra whitespace/newlines
+                    logger.warning(f"JSON parse error on {path}, trying to clean response: {e}")
+                    logger.warning(f"Raw response text (first 500 chars): {text[:500]}")
+
+                    # Try stripping whitespace
+                    try:
+                        data = json.loads(text.strip())
+                    except json.JSONDecodeError:
+                        # If still failing, try extracting first JSON object
+                        # Find matching braces
+                        text = text.strip()
+                        if text.startswith('{'):
+                            # Find matching closing brace
+                            brace_count = 0
+                            end_pos = 0
+                            for i, char in enumerate(text):
+                                if char == '{':
+                                    brace_count += 1
+                                elif char == '}':
+                                    brace_count -= 1
+                                if brace_count == 0:
+                                    end_pos = i + 1
+                                    break
+                            if end_pos > 0:
+                                data = json.loads(text[:end_pos])
+                            else:
+                                raise
+                        else:
+                            raise
+
                 if response.status != 200:
                     logger.warning(
                         "Ozon API non-200 response %s %s: %s",
@@ -304,7 +347,8 @@ class OzonClient:
         if color_image is not None:
             payload["color_image"] = color_image
 
-        return await self._post("/v1/product/pictures", payload)
+        # Use the correct endpoint: /v1/product/pictures/import
+        return await self._post("/v1/product/pictures/import", payload)
 
     async def close(self):
         """Close the client (cleanup)"""
