@@ -13,6 +13,7 @@ boto3==1.34.19
 
 # HTTP Client
 aiohttp==3.9.1
+requests==2.31.0
 
 # Async I/O
 aiofiles==23.2.1
