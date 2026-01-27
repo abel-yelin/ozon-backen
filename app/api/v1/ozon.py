@@ -364,7 +364,6 @@ async def get_r2_presigned_url(
                 Params={
                     'Bucket': settings.r2_bucket_name,
                     'Key': request.r2_path,
-                    'ContentType': request.content_type
                 },
                 ExpiresIn=3600,  # 1 hour
                 HttpMethod='PUT'
