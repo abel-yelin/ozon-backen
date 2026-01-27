@@ -303,6 +303,10 @@ def _process_batch_concurrent(
 
         sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
 
+        # Assign sequential indices to sorted sources for consistent naming
+        for idx, item in enumerate(sources_sorted, start=1):
+            item["_image_index"] = idx
+
         # Find main image (ending with "_1")
         head = None
         for item in sources_sorted:
@@ -322,7 +326,9 @@ def _process_batch_concurrent(
         if not prompt_override:
             prompt_override = str(options.get("extra_prompt") or "")
 
-        output_key = f"image-studio/{sku_name}/{_stem_from_name(head.get('name') or _safe_filename_from_url(head.get('url') or ''))}_{int(time.time())}.{output_format}"
+        # Use sequential image index for consistent naming (image_1, image_2, etc.)
+        image_index = head.get("_image_index", 1)
+        output_key = f"image-studio/{sku_name}/image_{image_index}.{output_format}"
 
         try:
             output_url, meta = _process_single_image(
@@ -454,7 +460,9 @@ def _process_batch_concurrent(
                 if style_prompt:
                     prompt_override = "\n\n".join([prompt_override, style_prompt]).strip()
 
-                output_key = f"image-studio/{sku_name}/{_stem_from_name(item.get('name') or _safe_filename_from_url(item.get('url') or ''))}_{int(time.time())}.{output_format}"
+                # Use sequential image index for consistent naming (image_1, image_2, etc.)
+                image_index = item.get("_image_index", 1)
+                output_key = f"image-studio/{sku_name}/image_{image_index}.{output_format}"
 
                 try:
                     output_url, meta = _process_single_image(
@@ -559,6 +567,11 @@ def _process_secondary_images_sync(
 
         sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
 
+        # Ensure indices are assigned (in case this function is called independently)
+        if not sources_sorted or not sources_sorted[0].get("_image_index"):
+            for idx, item in enumerate(sources_sorted, start=1):
+                item["_image_index"] = idx
+
         # Find main image to exclude
         head = None
         for item in sources_sorted:
@@ -602,7 +615,9 @@ def _process_secondary_images_sync(
             if style_prompt:
                 prompt_override = "\n\n".join([prompt_override, style_prompt]).strip()
 
-            output_key = f"image-studio/{sku_name}/{_stem_from_name(item.get('name') or _safe_filename_from_url(item.get('url') or ''))}_{int(time.time())}.{output_format}"
+            # Use sequential image index for consistent naming (image_1, image_2, etc.)
+            image_index = item.get("_image_index", 1)
+            output_key = f"image-studio/{sku_name}/image_{image_index}.{output_format}"
 
             try:
                 output_url, meta = _process_single_image(

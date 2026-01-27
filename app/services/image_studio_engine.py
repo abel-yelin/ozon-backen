@@ -506,6 +506,10 @@ async def _process_sku_main_async(
 
     sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
 
+    # Assign sequential indices to sorted sources for consistent naming
+    for idx, item in enumerate(sources_sorted, start=1):
+        item["_image_index"] = idx
+
     # Find main image
     from app.services.image_studio_worker import _stem_from_name, _is_main_stem
 
@@ -551,11 +555,15 @@ async def _process_sku_main_async(
 
             r2 = R2Service()
 
+            # Use sequential image index for consistent naming (image_1, image_2, etc.)
+            image_index = head.get("_image_index", 1)
+            filename = f"image_{image_index}.{output_format}"
+
             # For now, sync upload (we'll async this in next task)
             output_bytes = output_path.read_bytes()
             output_url = r2.upload_bytes_sync(
                 data=output_bytes,
-                key=f"image-studio/{sku_name}/{_stem_from_name(head.get('name'))}_{int(time.time())}.{output_format}",
+                key=f"image-studio/{sku_name}/{filename}",
                 content_type=_infer_content_type(output_format),
             )
 
