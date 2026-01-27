@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import logging
+import asyncio
 
 from app.api.deps import verify_api_key
 from app.plugins.ozon.download import OzonDownloadPlugin
@@ -80,6 +81,20 @@ class PushImagesResponse(BaseModel):
     data: Optional[dict] = None
     error: Optional[str] = None
     errors: Optional[List[dict]] = None
+
+
+class PresignedUrlRequest(BaseModel):
+    """Request model for R2 presigned URL"""
+    r2_path: str = Field(..., description="R2 storage path (e.g., users/123/ozon/article/image.jpg)")
+    content_type: str = Field("image/jpeg", description="Content type of the file")
+
+
+class PresignedUrlResponse(BaseModel):
+    """Response model for presigned URL"""
+    success: bool
+    upload_url: Optional[str] = None
+    public_url: Optional[str] = None
+    error: Optional[str] = None
 
 
 # ==================== Routes ====================
@@ -284,3 +299,93 @@ async def push_product_images(
             "data": None,
             "error": str(e)
         }
+
+
+@router.post("/r2/presigned-url", response_model=PresignedUrlResponse)
+async def get_r2_presigned_url(
+    request: PresignedUrlRequest,
+    authorized: bool = Depends(verify_api_key)
+):
+    """
+    Generate R2 presigned URL for direct browser upload.
+
+    **Usage flow:**
+    1. Frontend requests presigned URL with desired R2 path
+    2. Backend returns upload URL (valid for 1 hour)
+    3. Browser uploads directly to R2 using the presigned URL
+    4. File is accessible via public_url
+
+    **Request:**
+    ```json
+    {
+      "r2_path": "users/user_123/ozon/article_123/image_1.jpg",
+      "content_type": "image/jpeg"
+    }
+    ```
+
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "upload_url": "https://...",
+      "public_url": "https://r0.image2url.com/users/.../image_1.jpg"
+    }
+    ```
+
+    **Frontend upload example:**
+    ```javascript
+    // 1. Get presigned URL
+    const response = await fetch('/api/v1/ozon/r2/presigned-url', {
+      method: 'POST',
+      body: JSON.stringify({ r2_path: 'users/123/ozon/article/image.jpg' })
+    });
+    const { upload_url, public_url } = await response.json();
+
+    // 2. Upload directly to R2
+    await fetch(upload_url, {
+      method: 'PUT',
+      body: imageBlob,
+      headers: { 'Content-Type': 'image/jpeg' }
+    });
+
+    // 3. Use public_url
+    console.log('Image available at:', public_url);
+    ```
+    """
+    try:
+        logger.info(f"Generating presigned URL for r2_path={request.r2_path}")
+
+        # Generate presigned URL using R2 service
+        loop = asyncio.get_event_loop()
+
+        def generate_presigned():
+            return r2_service.s3_client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': settings.r2_bucket_name,
+                    'Key': request.r2_path,
+                    'ContentType': request.content_type
+                },
+                ExpiresIn=3600,  # 1 hour
+                HttpMethod='PUT'
+            )
+
+        upload_url = await loop.run_in_executor(None, generate_presigned)
+        public_url = f"{settings.r2_public_url}/{request.r2_path}"
+
+        logger.info(f"Generated presigned URL for r2_path={request.r2_path}")
+
+        return PresignedUrlResponse(
+            success=True,
+            upload_url=upload_url,
+            public_url=public_url
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL: {e}")
+        return PresignedUrlResponse(
+            success=False,
+            upload_url=None,
+            public_url=None,
+            error=str(e)
+        )
