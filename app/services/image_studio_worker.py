@@ -522,6 +522,152 @@ def _process_batch_concurrent(
     return all_results
 
 
+def _process_secondary_images_sync(
+    main_results: List[Dict[str, Any]],
+    do_secondary: bool,
+    max_workers_secondary: int,
+    api_key: str,
+    api_base: str,
+    model: str,
+    target_width: int,
+    target_height: int,
+    temperature: float,
+    output_format: str,
+    templates: Dict[str, str],
+    use_english: bool,
+    options: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Process secondary images after main images are done (sync version for async batch)."""
+    if not do_secondary:
+        return []
+
+    secondary_results = []
+    secondary_success = 0
+    secondary_failed = 0
+    ctx = capture_job_context()
+
+    # Collect all secondary images from successful SKUs
+    secondary_tasks = []
+
+    for result in main_results:
+        if not result.get("ok"):
+            continue
+        sku_name = result.get("sku")
+        sources = result.get("sources") or []
+        if not sources:
+            continue
+
+        sources_sorted = sorted(sources, key=lambda s: str(s.get("name") or s.get("url") or ""))
+
+        # Find main image to exclude
+        head = None
+        for item in sources_sorted:
+            stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+            if _is_main_stem(stem_value):
+                head = item
+                break
+        if head is None:
+            head = sources_sorted[0]
+
+        # Extract style prompt from main result if available
+        style_prompt = ""
+        if result.get("result_url") and options.get("include_style_prompt"):
+            instruction = _pick_prompt(templates, "style_extract_instruction_cn", use_english)
+            if instruction:
+                try:
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_path = Path(temp_dir) / f"head.{output_format}"
+                        _download_to_file(result["result_url"], temp_path)
+                        style_prompt = _encode_style_prompt(temp_path, api_key, api_base, model, instruction)
+                except Exception:
+                    pass
+
+        # Collect secondary images
+        for item in sources_sorted:
+            if item is head:
+                continue
+            secondary_tasks.append((sku_name, item, style_prompt))
+
+    if secondary_tasks:
+        max_sec_workers = min(max_workers_secondary, len(secondary_tasks))
+        print(f"[Batch] Stage 2: Processing {len(secondary_tasks)} secondary images with {max_sec_workers} workers", flush=True)
+
+        def _process_one_secondary(sku_name: str, item: Dict[str, Any], style_prompt: str) -> Dict[str, Any]:
+            """Process a single secondary image."""
+            check_cancelled()
+            stem_value = item.get("stem") or _stem_from_name(str(item.get("name") or ""))
+            is_main = _is_main_stem(stem_value)
+
+            prompt_override = _build_batch_prompt(templates, is_main, str(options.get("extra_prompt") or ""), use_english)
+            if style_prompt:
+                prompt_override = "\n\n".join([prompt_override, style_prompt]).strip()
+
+            output_key = f"image-studio/{sku_name}/{_stem_from_name(item.get('name') or _safe_filename_from_url(item.get('url') or ''))}_{int(time.time())}.{output_format}"
+
+            try:
+                output_url, meta = _process_single_image(
+                    api_key,
+                    api_base,
+                    model,
+                    target_width,
+                    target_height,
+                    temperature,
+                    prompt_override,
+                    str(item.get("url") or ""),
+                    output_key,
+                    output_format,
+                    is_main,
+                )
+                return {
+                    "sku": sku_name,
+                    "ok": True,
+                    "source_url": item.get("url"),
+                    "result_url": output_url,
+                    "metadata": meta,
+                }
+            except Exception as e:
+                return {"sku": sku_name, "ok": False, "error": str(e)}
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=max_sec_workers) as executor:
+            for sku_name, item, style_prompt in secondary_tasks:
+                check_cancelled()
+                rel = f"{sku_name}/{item.get('name', '')}"
+                print(f"[Batch Secondary] Submitting: {rel}", flush=True)
+                future = executor.submit(run_in_job_context, ctx, _process_one_secondary, sku_name, item, style_prompt)
+                futures[future] = (sku_name, item.get("name", ""))
+
+            pending = set(futures.keys())
+            try:
+                while pending:
+                    check_cancelled()
+                    done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        sku_name, name = futures.get(future) or ("", "")
+                        rel = f"{sku_name}/{name}" if sku_name else name
+                        try:
+                            r = future.result()
+                        except Exception as e:
+                            r = {"sku": sku_name, "ok": False, "error": str(e)}
+                        secondary_results.append(r)
+                        if r.get("ok"):
+                            secondary_success += 1
+                            print(f"[Batch Secondary] {rel} ✓ Success", flush=True)
+                        else:
+                            secondary_failed += 1
+                            print(f"[Batch Secondary] {rel} ✗ Failed: {r.get('error')}", flush=True)
+            finally:
+                for f in pending:
+                    try:
+                        f.cancel()
+                    except Exception:
+                        pass
+
+        print(f"[Batch] Stage 2 complete: {secondary_success} success, {secondary_failed} failed", flush=True)
+
+    return [r for r in secondary_results if r.get("ok")]
+
+
 def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     check_cancelled()
     mode = str(payload.get("mode") or "").strip()
@@ -698,9 +844,27 @@ def run_image_studio_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # Skip main processing
                 main_results = [{"sku": k, "ok": True, "sources": v} for k, v in sku_images_map.items()]
 
-            # Process secondary images (keep sync for now, will async in next phase)
-            # For now, we'll only use async for main images
+            # Process secondary images using sync helper (async secondary in next phase)
             batch_results = [r for r in main_results if r.get("ok")]
+
+            if do_secondary:
+                print(f"[Batch] Processing secondary images after main async stage", flush=True)
+                secondary_results = _process_secondary_images_sync(
+                    main_results=main_results,
+                    do_secondary=do_secondary,
+                    max_workers_secondary=max_workers_secondary,
+                    api_key=api_key,
+                    api_base=api_base,
+                    model=model,
+                    target_width=target_width,
+                    target_height=target_height,
+                    temperature=temperature,
+                    output_format=output_format,
+                    templates=templates,
+                    use_english=use_english,
+                    options=options,
+                )
+                batch_results.extend(secondary_results)
 
         except Exception as e:
             print(f"[Batch] Async processing failed, falling back to sync: {e}", flush=True)
