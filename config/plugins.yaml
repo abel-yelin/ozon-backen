@@ -8,7 +8,7 @@ plugins:
   ozon-download:
     enabled: true
     max_workers: 5          # Maximum concurrent downloads
-    timeout_sec: 20         # HTTP request timeout
+    timeout_sec: 30         # HTTP request timeout (increased for slow networks)
     default_field: offer_id # Default search field (offer_id/sku/vendor_code)
     supported_fields:
       - offer_id

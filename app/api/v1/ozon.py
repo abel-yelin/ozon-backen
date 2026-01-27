@@ -44,6 +44,7 @@ class DownloadRequest(BaseModel):
     articles: List[str] = Field(..., description="List of article numbers", min_length=1, max_length=100)
     field: Literal["offer_id", "sku", "vendor_code"] = Field("offer_id", description="Search field")
     user_id: str = Field(..., description="User ID from frontend (for R2 path isolation)")
+    download_images: bool = Field(True, description="If true, download and upload to R2. If false, only return Ozon URLs")
 
 
 class ImageResult(BaseModel):
@@ -89,17 +90,29 @@ async def download_ozon_images(
     authorized: bool = Depends(verify_api_key)
 ):
     """
-    Download Ozon product images directly to R2.
+    Download Ozon product images or get image URLs.
 
-    **Backend responsibilities (heavy lifting):**
+    **Two modes:**
+
+    1. **Download mode (download_images=true, default)**:
+       - Backend calls Ozon API
+       - Downloads images
+       - Uploads to R2
+       - Returns R2 URLs
+
+    2. **Metadata mode (download_images=false)**:
+       - Backend calls Ozon API
+       - Returns original Ozon image URLs
+       - Frontend handles download & upload to R2
+
+    **Backend responsibilities:**
     - Call Ozon Seller API
-    - Download images
-    - Upload to R2
+    - Optionally download and upload to R2 (if download_images=true)
 
     **Frontend responsibilities:**
     - User authentication
     - Credential storage
-    - Task management
+    - Download & upload to R2 (if download_images=false)
 
     Request:
     ```json
@@ -110,27 +123,33 @@ async def download_ozon_images(
       },
       "articles": ["123456", "789012"],
       "field": "offer_id",
-      "user_id": "user_123"
+      "user_id": "user_123",
+      "download_images": false
     }
     ```
 
-    Response:
+    Response (download_images=false):
     ```json
     {
       "success": true,
       "data": {
-        "total_articles": 2,
-        "processed": 2,
-        "total_images": 16,
-        "success_images": 15,
-        "failed_images": 1,
-        "items": [...]
+        "total_articles": 1,
+        "processed": 1,
+        "total_images": 8,
+        "success_images": 8,
+        "failed_images": 0,
+        "items": [{
+          "article": "123456",
+          "product_id": 3422867147,
+          "status": "success",
+          "urls": ["https://cdn1.ozone.ru/...", ...]
+        }]
       }
     }
     ```
     """
     try:
-        logger.info(f"Processing Ozon download for user={request.user_id}, articles={len(request.articles)}")
+        logger.info(f"Processing Ozon download for user={request.user_id}, articles={len(request.articles)}, download_images={request.download_images}")
 
         # Process download directly (no database, no async tasks)
         result = await ozon_plugin.process({
@@ -141,14 +160,24 @@ async def download_ozon_images(
             },
             "articles": request.articles,
             "field": request.field,
-            "r2_service": r2_service
+            "r2_service": r2_service,
+            "download_images": request.download_images
         })
 
         success = bool(result.get("success_images"))
+        error = None if success else "NO_IMAGES_FOUND"
+
+        # If metadata-only mode, success is based on finding images
+        # If download mode, success is based on successful downloads
+        if not request.download_images:
+            # Metadata mode: success if we found any images
+            success = bool(result.get("total_images", 0) > 0)
+            error = None if success else "NO_IMAGES_FOUND"
+
         return DownloadResponse(
             success=success,
             data=result,
-            error=None if success else "NO_IMAGES_DOWNLOADED"
+            error=error
         )
 
     except Exception as e:

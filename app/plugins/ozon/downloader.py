@@ -8,13 +8,13 @@ from io import BytesIO
 logger = logging.getLogger(__name__)
 
 
-async def download_image_to_bytes(url: str, timeout: int = 20) -> Tuple[bool, Optional[bytes], Optional[str]]:
+async def download_image_to_bytes(url: str, timeout: int = 30) -> Tuple[bool, Optional[bytes], Optional[str]]:
     """
     Download image directly to memory (bytes).
 
     Args:
         url: Image URL (supports http/https and data URLs)
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (default: 30)
 
     Returns:
         Tuple of (success, image_bytes, error_message)
@@ -39,12 +39,20 @@ async def download_image_to_bytes(url: str, timeout: int = 20) -> Tuple[bool, Op
 
     # Handle HTTP/HTTPS URLs
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.ozon.ru/",
     }
 
     try:
+        timeout_config = aiohttp.ClientTimeout(
+            total=timeout,
+            connect=10,  # Connection timeout
+            sock_read=timeout  # Read timeout
+        )
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+            async with session.get(url, headers=headers, timeout=timeout_config, ssl=False) as response:
                 if response.status == 200:
                     image_bytes = await response.read()
                     return True, image_bytes, None
@@ -54,10 +62,10 @@ async def download_image_to_bytes(url: str, timeout: int = 20) -> Tuple[bool, Op
                     return False, None, error
 
     except aiohttp.ClientError as e:
-        logger.error(f"HTTP client error downloading {url}: {e}")
+        logger.error(f"HTTP client error downloading {url}: {type(e).__name__}: {e}")
         return False, None, str(e)
     except Exception as e:
-        logger.error(f"Unexpected error downloading {url}: {e}")
+        logger.error(f"Unexpected error downloading {url}: {type(e).__name__}: {e}")
         return False, None, str(e)
 
 

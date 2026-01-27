@@ -54,7 +54,8 @@ class OzonDownloadPlugin(BasePlugin):
                 },
                 "articles": List[str],
                 "field": str (optional),
-                "r2_service": R2StorageService
+                "r2_service": R2StorageService,
+                "download_images": bool (optional, default=True)
             }
 
         Returns:
@@ -65,6 +66,7 @@ class OzonDownloadPlugin(BasePlugin):
         articles = input_data.get("articles", [])
         field = input_data.get("field", self.default_field)
         r2_service = input_data.get("r2_service")
+        download_images = input_data.get("download_images", True)
 
         if not user_id or not r2_service:
             raise ValueError("Missing required fields: user_id, r2_service")
@@ -96,7 +98,8 @@ class OzonDownloadPlugin(BasePlugin):
                     user_id=user_id,
                     article=article,
                     field=field,
-                    r2_service=r2_service
+                    r2_service=r2_service,
+                    download_images=download_images
                 )
 
                 result["items"].append(item_result)
@@ -117,10 +120,19 @@ class OzonDownloadPlugin(BasePlugin):
         user_id: str,
         article: str,
         field: str,
-        r2_service: R2StorageService
+        r2_service: R2StorageService,
+        download_images: bool = True
     ) -> dict:
         """
         Process a single article.
+
+        Args:
+            client: Ozon API client
+            user_id: User ID for R2 path
+            article: Article number
+            field: Search field type
+            r2_service: R2 storage service
+            download_images: If True, download and upload to R2. If False, only return Ozon URLs.
 
         Returns:
             {
@@ -134,7 +146,7 @@ class OzonDownloadPlugin(BasePlugin):
                 "error": Optional[str]
             }
         """
-        logger.info(f"Processing article={article} field={field}")
+        logger.info(f"Processing article={article} field={field} download_images={download_images}")
 
         # Step 1: Find product ID
         product_id = await client.find_product_id(article, field)
@@ -171,7 +183,20 @@ class OzonDownloadPlugin(BasePlugin):
 
         logger.info(f"Found {len(image_urls)} images for article={article}")
 
-        # Step 3: Download and upload to R2 (concurrent)
+        # Step 3: Return Ozon URLs directly (metadata-only mode)
+        if not download_images:
+            logger.info(f"Metadata-only mode: returning {len(image_urls)} Ozon URLs without downloading")
+            return {
+                "article": article,
+                "product_id": product_id,
+                "status": "success",
+                "total_images": len(image_urls),
+                "success_images": len(image_urls),
+                "failed_images": 0,
+                "urls": image_urls  # Return original Ozon URLs
+            }
+
+        # Step 4: Download and upload to R2 (concurrent)
         stats = {
             "total": len(image_urls),
             "success": 0,
